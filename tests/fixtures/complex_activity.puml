@@ -1,0 +1,22 @@
+@startuml
+title Order Processing
+
+start
+:Receive Order;
+
+if (In Stock?) then (yes)
+  :Reserve Items;
+  if (Payment OK?) then (yes)
+    :Process Payment;
+    :Ship Order;
+  else (no)
+    :Cancel Order;
+  endif
+else (no)
+  :Notify Customer;
+  :Add to Waitlist;
+endif
+
+:Send Confirmation;
+stop
+@enduml

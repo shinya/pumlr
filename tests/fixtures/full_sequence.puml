@@ -1,0 +1,28 @@
+@startuml
+title Authentication Flow
+
+participant Client
+participant Server
+database Database
+
+Client -> Server : POST /login
+activate Server
+Server -> Database : SELECT user
+activate Database
+Database --> Server : user data
+deactivate Database
+
+alt valid credentials
+    Server --> Client : 200 OK + JWT
+else invalid credentials
+    Server --> Client : 401 Unauthorized
+end
+
+deactivate Server
+
+== Session ==
+
+Client -> Server : GET /profile
+note right of Client : Bearer token attached
+Server --> Client : 200 OK
+@enduml

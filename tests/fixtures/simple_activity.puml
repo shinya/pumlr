@@ -1,0 +1,12 @@
+@startuml
+start
+:Initialize;
+:Process Data;
+if (Valid?) then (yes)
+  :Save;
+else (no)
+  :Show Error;
+endif
+:Cleanup;
+stop
+@enduml
