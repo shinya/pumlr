@@ -1,0 +1,11 @@
+@startuml
+start
+:Receive Request;
+fork
+  :Write Log;
+fork again
+  :Send Notification;
+end fork
+:Respond;
+stop
+@enduml

@@ -26,10 +26,27 @@ const STOP_INNER_RADIUS: f32 = 6.0;
 const BRANCH_GAP: f32 = 30.0;
 const NOTE_PADDING: f32 = 8.0;
 const NOTE_MARGIN: f32 = 10.0;
-const PARTITION_PADDING: f32 = 12.0;
+/// Partition frame: name tab height, side padding, inner-top gap, bottom padding.
+const PARTITION_TAB_H: f32 = 19.5;
+const PARTITION_PADDING_H: f32 = 20.0;
+const PARTITION_INNER_TOP: f32 = 17.0;
+const PARTITION_PADDING_B: f32 = 12.0;
+const PARTITION_FONT_SIZE: f32 = 14.0;
 const TITLE_MARGIN: f32 = 10.0;
 const FORK_BAR_HEIGHT: f32 = 6.0;
 const FORK_BAR_EXTEND: f32 = 20.0;
+/// While loop: rails run this far outside the widest content.
+const WHILE_RAIL_MARGIN: f32 = 12.0;
+/// While loop: gap between hexagon bottom and body top (room for the is-label).
+const WHILE_BODY_GAP: f32 = 32.0;
+/// While loop: drop below the body before the loop-back rail turns.
+const WHILE_LOOP_DROP: f32 = 10.0;
+/// While loop: drop from the loop-back turn to the exit junction.
+const WHILE_EXIT_DROP: f32 = 12.0;
+/// If/elseif chain: gap between branch columns.
+const CHAIN_COL_GAP: f32 = 15.0;
+/// If/elseif chain: gap between hexagon bottom and branch tops.
+const CHAIN_BRANCH_GAP: f32 = 33.0;
 
 // --- Style (PlantUML 1.2026 default) ---
 
@@ -200,10 +217,9 @@ impl<'a> ActivityLayoutContext<'a> {
             ActivityElement::Switch(block) => self.measure_switch(block),
             ActivityElement::Partition(partition) => {
                 let inner = self.measure_elements(&partition.elements);
-                let label_w =
-                    self.measurer.measure_width(&partition.name) + PARTITION_PADDING * 2.0;
-                let w = inner.width.max(label_w) + PARTITION_PADDING * 2.0;
-                let h = inner.height + PARTITION_PADDING * 2.0 + self.measurer.line_height();
+                let tab_w = self.partition_tab_width(&partition.name);
+                let w = inner.width.max(tab_w) + PARTITION_PADDING_H * 2.0;
+                let h = PARTITION_TAB_H + PARTITION_INNER_TOP + inner.height + PARTITION_PADDING_B;
                 SubtreeBox {
                     width: w,
                     height: h,
@@ -236,20 +252,17 @@ impl<'a> ActivityLayoutContext<'a> {
     }
 
     fn measure_if(&self, block: &IfBlock) -> SubtreeBox {
+        if !block.elseif_blocks.is_empty() {
+            return self.measure_if_chain(block);
+        }
         let then_box = self.measure_elements(&block.then_elements);
         let else_box = self.measure_elements(&block.else_elements);
 
         let hex_w = self.hex_width(&block.condition);
 
-        // Branches width = then + gap + else (+ elseif branches)
-        let mut branches_width = then_box.width + BRANCH_GAP + else_box.width;
-        let mut max_branch_height = then_box.height.max(else_box.height);
-
-        for elseif in &block.elseif_blocks {
-            let b = self.measure_elements(&elseif.elements);
-            branches_width += BRANCH_GAP + b.width;
-            max_branch_height = max_branch_height.max(b.height);
-        }
+        // Branches width = then + gap + else
+        let branches_width = then_box.width + BRANCH_GAP + else_box.width;
+        let max_branch_height = then_box.height.max(else_box.height);
 
         let total_width = branches_width.max(hex_w).max(MERGE_HALF * 2.0);
         let center_x = total_width / 2.0;
@@ -265,11 +278,65 @@ impl<'a> ActivityLayoutContext<'a> {
         }
     }
 
+    /// Column layout for an if/elseif chain: one column per branch
+    /// (then, each elseif, else). Returns (widths, center offsets from the
+    /// block's left edge).
+    fn chain_columns(&self, block: &IfBlock) -> (Vec<f32>, Vec<f32>) {
+        let mut widths = Vec::new();
+        widths.push(
+            self.measure_elements(&block.then_elements)
+                .width
+                .max(self.hex_width(&block.condition)),
+        );
+        for elseif in &block.elseif_blocks {
+            widths.push(
+                self.measure_elements(&elseif.elements)
+                    .width
+                    .max(self.hex_width(&elseif.condition)),
+            );
+        }
+        widths.push(self.measure_elements(&block.else_elements).width.max(20.0));
+
+        let mut centers = Vec::new();
+        let mut x = 0.0;
+        for w in &widths {
+            centers.push(x + w / 2.0);
+            x += w + CHAIN_COL_GAP;
+        }
+        (widths, centers)
+    }
+
+    fn measure_if_chain(&self, block: &IfBlock) -> SubtreeBox {
+        let (widths, centers) = self.chain_columns(block);
+        let total_width: f32 =
+            widths.iter().sum::<f32>() + CHAIN_COL_GAP * (widths.len() - 1) as f32;
+
+        let mut max_branch_height = self
+            .measure_elements(&block.then_elements)
+            .height
+            .max(self.measure_elements(&block.else_elements).height);
+        for elseif in &block.elseif_blocks {
+            max_branch_height =
+                max_branch_height.max(self.measure_elements(&elseif.elements).height);
+        }
+
+        // Flow enters/leaves at the midpoint between the outer columns.
+        let center_x = (centers[0] + centers[centers.len() - 1]) / 2.0;
+        let h = HEX_HALF_H * 2.0 + CHAIN_BRANCH_GAP + max_branch_height + ARROW_SPACING;
+        SubtreeBox {
+            width: total_width,
+            height: h,
+            center_x,
+        }
+    }
+
     fn measure_while(&self, block: &WhileBlock) -> SubtreeBox {
         let hex_w = self.hex_width(&block.condition);
         let inner = self.measure_elements(&block.elements);
-        let w = inner.width.max(hex_w) + BRANCH_GAP;
-        let h = HEX_HALF_H * 2.0 + ARROW_SPACING + inner.height + ARROW_SPACING;
+        // Rails run down both sides, 12px outside the widest content.
+        let w = inner.width.max(hex_w) + WHILE_RAIL_MARGIN * 2.0;
+        let h =
+            HEX_HALF_H * 2.0 + WHILE_BODY_GAP + inner.height + WHILE_LOOP_DROP + WHILE_EXIT_DROP;
         SubtreeBox {
             width: w,
             height: h,
@@ -307,7 +374,7 @@ impl<'a> ActivityLayoutContext<'a> {
             + BRANCH_GAP * (case_boxes.len().saturating_sub(1) as f32);
         let max_height = case_boxes.iter().map(|b| b.height).fold(0.0f32, f32::max);
 
-        let h = HEX_HALF_H * 2.0 + BRANCH_TOP_GAP + max_height + MERGE_TOP_GAP + MERGE_HALF * 2.0;
+        let h = HEX_HALF_H * 2.0 + CHAIN_BRANCH_GAP + max_height + MERGE_TOP_GAP + MERGE_HALF * 2.0;
         SubtreeBox {
             width: total_width.max(self.hex_width(&block.condition)),
             height: h,
@@ -319,9 +386,14 @@ impl<'a> ActivityLayoutContext<'a> {
 
     fn draw_elements(&mut self, elements: &[ActivityElement], center_x: f32, mut y: f32) -> f32 {
         for (i, element) in elements.iter().enumerate() {
-            // Draw downward arrow from previous element (except before the first)
+            // Draw downward arrow from previous element (except before the
+            // first). An if/elseif chain draws its own entry elbow instead.
             if i > 0 {
-                self.draw_down_arrow(center_x, y, y + ARROW_SPACING, None);
+                let chain_entry =
+                    matches!(element, ActivityElement::If(b) if !b.elseif_blocks.is_empty());
+                if !chain_entry {
+                    self.draw_down_arrow(center_x, y, y + ARROW_SPACING, None);
+                }
                 y += ARROW_SPACING;
             }
 
@@ -401,6 +473,9 @@ impl<'a> ActivityLayoutContext<'a> {
     }
 
     fn draw_if(&mut self, block: &IfBlock, center_x: f32, y: f32) -> f32 {
+        if !block.elseif_blocks.is_empty() {
+            return self.draw_if_chain(block, center_x, y);
+        }
         let total_box = self.measure_if(block);
         let then_box = self.measure_elements(&block.then_elements);
         let else_box = self.measure_elements(&block.else_elements);
@@ -441,19 +516,166 @@ impl<'a> ActivityLayoutContext<'a> {
         y + total_box.height
     }
 
+    /// If/elseif chain, wired like PlantUML: hexagons connected left to right,
+    /// each with its branch column below; the flow enters via an elbow into
+    /// the first hexagon and all branches merge on a horizontal junction line
+    /// (no merge diamond).
+    fn draw_if_chain(&mut self, block: &IfBlock, center_x: f32, y: f32) -> f32 {
+        let total_box = self.measure_if_chain(block);
+        let (_, centers) = self.chain_columns(block);
+        let left = center_x - total_box.center_x;
+        let cols: Vec<f32> = centers.iter().map(|c| left + c).collect();
+        let n_conds = cols.len() - 1; // last column is the else branch
+
+        let cy = y + HEX_HALF_H;
+        let hex_bottom = y + HEX_HALF_H * 2.0;
+        let branch_top = hex_bottom + CHAIN_BRANCH_GAP;
+        let junction_y = y + total_box.height;
+
+        // Entry elbow: from the flow center above, over to the first hexagon
+        let prev_bottom = y - ARROW_SPACING;
+        self.primitives.push(Primitive::Path(Path {
+            d: format!(
+                "M {},{} L {},{} L {},{} L {},{}",
+                center_x,
+                prev_bottom,
+                center_x,
+                prev_bottom + 5.0,
+                cols[0],
+                prev_bottom + 5.0,
+                cols[0],
+                y,
+            ),
+            fill: "none".into(),
+            stroke: EDGE_COLOR.into(),
+            stroke_width: 1.0,
+            dashed: false,
+        }));
+        self.primitives.push(Primitive::Polygon(Polygon {
+            points: concave_head(cols[0], y, 0.0, 1.0),
+            fill: EDGE_COLOR.into(),
+            stroke: "none".into(),
+            stroke_width: 0.0,
+        }));
+
+        // Conditions with their branch columns
+        let mut conds: Vec<(&str, &str, &[ActivityElement])> = vec![(
+            block.condition.as_str(),
+            block.then_label.as_str(),
+            &block.then_elements[..],
+        )];
+        for elseif in &block.elseif_blocks {
+            conds.push((
+                elseif.condition.as_str(),
+                elseif.then_label.as_str(),
+                &elseif.elements[..],
+            ));
+        }
+
+        let mut branch_ends = Vec::new();
+        for (i, (condition, then_label, elements)) in conds.iter().enumerate() {
+            let cx = cols[i];
+            let hex_half_w = self.hex_width(condition) / 2.0;
+            self.draw_condition_hexagon(cx, cy, condition);
+
+            // then-label below the hexagon, next to the down edge
+            if !then_label.is_empty() {
+                self.primitives.push(Primitive::Text(Text {
+                    x: cx + 4.0,
+                    y: hex_bottom + 10.6,
+                    content: then_label.to_string(),
+                    font_size: LABEL_FONT_SIZE,
+                    font_family: FONT_FAMILY.into(),
+                    fill: TEXT_COLOR.into(),
+                    anchor: TextAnchor::Start,
+                    bold: false,
+                }));
+            }
+
+            self.draw_down_arrow(cx, hex_bottom, branch_top, None);
+            branch_ends.push(self.draw_elements(elements, cx, branch_top));
+
+            let hex_right = cx + hex_half_w;
+            if i + 1 < n_conds {
+                // "no" edge into the next condition's left vertex
+                let next_left = cols[i + 1] - self.hex_width(conds[i + 1].0) / 2.0;
+                self.primitives.push(Primitive::Line(Line {
+                    x1: hex_right,
+                    y1: cy,
+                    x2: next_left,
+                    y2: cy,
+                    stroke: EDGE_COLOR.into(),
+                    stroke_width: 1.0,
+                }));
+                self.primitives.push(Primitive::Polygon(Polygon {
+                    points: concave_head(next_left, cy, 1.0, 0.0),
+                    fill: EDGE_COLOR.into(),
+                    stroke: "none".into(),
+                    stroke_width: 0.0,
+                }));
+            } else {
+                // Final "no" edge over and down into the else branch
+                let else_cx = cols[n_conds];
+                if !block.else_label.is_empty() {
+                    self.draw_side_label(hex_right, cy, &block.else_label, TextAnchor::Start);
+                }
+                self.primitives.push(Primitive::Path(Path {
+                    d: format!(
+                        "M {},{} L {},{} L {},{}",
+                        hex_right, cy, else_cx, cy, else_cx, branch_top,
+                    ),
+                    fill: "none".into(),
+                    stroke: EDGE_COLOR.into(),
+                    stroke_width: 1.0,
+                    dashed: false,
+                }));
+                self.primitives.push(Primitive::Polygon(Polygon {
+                    points: concave_head(else_cx, branch_top, 0.0, 1.0),
+                    fill: EDGE_COLOR.into(),
+                    stroke: "none".into(),
+                    stroke_width: 0.0,
+                }));
+            }
+        }
+
+        // Else branch
+        branch_ends.push(self.draw_elements(&block.else_elements, cols[n_conds], branch_top));
+
+        // Junction line all branches drop onto
+        self.primitives.push(Primitive::Line(Line {
+            x1: cols[0],
+            y1: junction_y,
+            x2: cols[n_conds],
+            y2: junction_y,
+            stroke: EDGE_COLOR.into(),
+            stroke_width: 1.0,
+        }));
+        for (cx, end_y) in cols.iter().zip(&branch_ends) {
+            self.draw_down_arrow(*cx, *end_y, junction_y, None);
+        }
+
+        junction_y
+    }
+
+    /// While loop, wired like PlantUML: body below the hexagon, loop-back rail
+    /// on the right (into the hexagon's right vertex), exit rail on the left
+    /// (from the left vertex down to a junction the flow continues from).
     fn draw_while(&mut self, block: &WhileBlock, center_x: f32, y: f32) -> f32 {
         let total_box = self.measure_while(block);
+        let inner = self.measure_elements(&block.elements);
 
         // Condition hexagon
         let cy = y + HEX_HALF_H;
         self.draw_condition_hexagon(center_x, cy, &block.condition);
         let hex_half_w = self.hex_width(&block.condition) / 2.0;
+        let hex_left = center_x - hex_half_w;
+        let hex_right = center_x + hex_half_w;
 
         // "is" label (loop-continue side, below the hexagon)
         if !block.is_label.is_empty() {
             self.primitives.push(Primitive::Text(Text {
-                x: center_x + 5.0,
-                y: cy + HEX_HALF_H + 12.0,
+                x: center_x + 4.0,
+                y: y + HEX_HALF_H * 2.0 + 10.6,
                 content: block.is_label.clone(),
                 font_size: LABEL_FONT_SIZE,
                 font_family: FONT_FAMILY.into(),
@@ -464,22 +686,29 @@ impl<'a> ActivityLayoutContext<'a> {
         }
 
         // Body
-        let body_y = y + HEX_HALF_H * 2.0 + ARROW_SPACING;
-        self.draw_down_arrow(center_x, y + HEX_HALF_H * 2.0, body_y, None);
-        let body_end_y = self.draw_elements(&block.elements, center_x, body_y);
+        let body_top = y + HEX_HALF_H * 2.0 + WHILE_BODY_GAP;
+        self.draw_down_arrow(center_x, y + HEX_HALF_H * 2.0, body_top, None);
+        let body_end_y = self.draw_elements(&block.elements, center_x, body_top);
 
-        // Loop-back arrow (left side)
-        let loop_x = center_x - total_box.width / 2.0 - 10.0;
+        let content_half = inner.width.max(hex_half_w * 2.0) / 2.0;
+        let rail_r = center_x + content_half + WHILE_RAIL_MARGIN;
+        let rail_l = center_x - content_half - WHILE_RAIL_MARGIN;
+        let loop_turn_y = body_end_y + WHILE_LOOP_DROP;
+        let junction_y = loop_turn_y + WHILE_EXIT_DROP;
+
+        // Loop-back: down from the body, right rail up, into the right vertex
         self.primitives.push(Primitive::Path(Path {
             d: format!(
-                "M {},{} L {},{} L {},{} L {},{}",
+                "M {},{} L {},{} L {},{} L {},{} L {},{}",
                 center_x,
                 body_end_y,
-                loop_x,
-                body_end_y,
-                loop_x,
+                center_x,
+                loop_turn_y,
+                rail_r,
+                loop_turn_y,
+                rail_r,
                 cy,
-                center_x - hex_half_w,
+                hex_right,
                 cy,
             ),
             fill: "none".into(),
@@ -487,17 +716,41 @@ impl<'a> ActivityLayoutContext<'a> {
             stroke_width: 1.0,
             dashed: false,
         }));
-        // Arrowhead pointing right into the hexagon's left vertex
         self.primitives.push(Primitive::Polygon(Polygon {
-            points: concave_head(center_x - hex_half_w, cy, 1.0, 0.0),
+            points: concave_head(rail_r, (cy + loop_turn_y) / 2.0, 0.0, -1.0),
+            fill: EDGE_COLOR.into(),
+            stroke: "none".into(),
+            stroke_width: 0.0,
+        }));
+        self.primitives.push(Primitive::Polygon(Polygon {
+            points: concave_head(hex_right, cy, -1.0, 0.0),
             fill: EDGE_COLOR.into(),
             stroke: "none".into(),
             stroke_width: 0.0,
         }));
 
-        // "end" label (loop-exit side)
+        // Exit: from the left vertex, left rail down to the junction, back to
+        // the flow center (the connector to the next element starts there)
+        self.primitives.push(Primitive::Path(Path {
+            d: format!(
+                "M {},{} L {},{} L {},{} L {},{}",
+                hex_left, cy, rail_l, cy, rail_l, junction_y, center_x, junction_y,
+            ),
+            fill: "none".into(),
+            stroke: EDGE_COLOR.into(),
+            stroke_width: 1.0,
+            dashed: false,
+        }));
+        self.primitives.push(Primitive::Polygon(Polygon {
+            points: concave_head(rail_l, (cy + junction_y) / 2.0, 0.0, 1.0),
+            fill: EDGE_COLOR.into(),
+            stroke: "none".into(),
+            stroke_width: 0.0,
+        }));
+
+        // "endwhile" label (loop-exit side)
         if !block.end_label.is_empty() {
-            self.draw_side_label(center_x - hex_half_w, cy, &block.end_label, TextAnchor::End);
+            self.draw_side_label(hex_left, cy, &block.end_label, TextAnchor::End);
         }
 
         y + total_box.height
@@ -573,7 +826,7 @@ impl<'a> ActivityLayoutContext<'a> {
 
         let total_cases_width = total_box.width;
         let left_x = center_x - total_cases_width / 2.0;
-        let branch_top_y = y + HEX_HALF_H * 2.0 + BRANCH_TOP_GAP;
+        let branch_top_y = y + HEX_HALF_H * 2.0 + CHAIN_BRANCH_GAP;
 
         let merge_cy = y + total_box.height - MERGE_HALF;
 
@@ -589,15 +842,16 @@ impl<'a> ActivityLayoutContext<'a> {
             };
             self.draw_branch_edge_out(exit_x, cy, case_cx, branch_top_y);
 
+            // Case label sits beside the vertical entry edge, halfway down
             if !case.label.is_empty() {
                 self.primitives.push(Primitive::Text(Text {
-                    x: case_cx,
-                    y: branch_top_y - 5.0,
+                    x: case_cx + 2.0,
+                    y: (cy + branch_top_y) / 2.0 + 4.0,
                     content: case.label.clone(),
                     font_size: LABEL_FONT_SIZE,
                     font_family: FONT_FAMILY.into(),
                     fill: TEXT_COLOR.into(),
-                    anchor: TextAnchor::Middle,
+                    anchor: TextAnchor::Start,
                     bold: false,
                 }));
             }
@@ -614,39 +868,63 @@ impl<'a> ActivityLayoutContext<'a> {
         y + total_box.height
     }
 
+    /// Tab width for a partition label (14px text + side margins).
+    fn partition_tab_width(&self, name: &str) -> f32 {
+        self.measurer.measure_width(name) * (PARTITION_FONT_SIZE / FONT_SIZE) + 26.0
+    }
+
     fn draw_partition(&mut self, partition: &Partition, center_x: f32, y: f32) -> f32 {
         let inner = self.measure_elements(&partition.elements);
-        let label_w = self.measurer.measure_width(&partition.name) + PARTITION_PADDING * 2.0;
-        let w = inner.width.max(label_w) + PARTITION_PADDING * 2.0;
-        let label_h = self.measurer.line_height();
-        let h = inner.height + PARTITION_PADDING * 2.0 + label_h;
+        let tab_w = self.partition_tab_width(&partition.name);
+        let w = inner.width.max(tab_w) + PARTITION_PADDING_H * 2.0;
+        let h = PARTITION_TAB_H + PARTITION_INNER_TOP + inner.height + PARTITION_PADDING_B;
+        let left = center_x - w / 2.0;
 
         // Partition frame
         self.primitives.push(Primitive::Rect(Rect {
-            x: center_x - w / 2.0,
+            x: left,
             y,
             width: w,
             height: h,
             fill: "none".into(),
-            stroke: SHAPE_STROKE.into(),
-            stroke_width: 1.0,
+            stroke: "#000000".into(),
+            stroke_width: 1.5,
             rx: 0.0,
             ry: 0.0,
         }));
 
-        // Partition label
-        self.primitives.push(Primitive::Text(Text {
-            x: center_x,
-            y: y + label_h * 0.8,
-            content: partition.name.clone(),
-            font_size: FONT_SIZE,
-            font_family: FONT_FAMILY.into(),
-            fill: TEXT_COLOR.into(),
-            anchor: TextAnchor::Middle,
-            bold: true,
+        // Name tab in the top-left corner (open path with a notched corner)
+        self.primitives.push(Primitive::Path(Path {
+            d: format!(
+                "M {},{} L {},{} L {},{} L {},{}",
+                left + tab_w,
+                y,
+                left + tab_w,
+                y + PARTITION_TAB_H - 10.0,
+                left + tab_w - 10.0,
+                y + PARTITION_TAB_H,
+                left,
+                y + PARTITION_TAB_H,
+            ),
+            fill: "none".into(),
+            stroke: "#000000".into(),
+            stroke_width: 1.5,
+            dashed: false,
         }));
 
-        let inner_y = y + label_h + PARTITION_PADDING;
+        // Partition label inside the tab
+        self.primitives.push(Primitive::Text(Text {
+            x: left + 3.0,
+            y: y + 14.5,
+            content: partition.name.clone(),
+            font_size: PARTITION_FONT_SIZE,
+            font_family: FONT_FAMILY.into(),
+            fill: TEXT_COLOR.into(),
+            anchor: TextAnchor::Start,
+            bold: false,
+        }));
+
+        let inner_y = y + PARTITION_TAB_H + PARTITION_INNER_TOP;
         self.draw_elements(&partition.elements, center_x, inner_y);
 
         y + h
@@ -958,22 +1236,6 @@ fn circle_path(cx: f32, cy: f32, r: f32) -> String {
         r,
         -(r * 2.0),
     )
-}
-
-/// PlantUML-style concave arrowhead: tip at (tip_x, tip_y), pointing along the
-/// unit vector (ux, uy). Length 10, half-width 4, notch 6 back from the tip.
-fn concave_head(tip_x: f32, tip_y: f32, ux: f32, uy: f32) -> Vec<(f32, f32)> {
-    let base_x = tip_x - ux * 10.0;
-    let base_y = tip_y - uy * 10.0;
-    // Perpendicular
-    let px = -uy;
-    let py = ux;
-    vec![
-        (base_x + px * 4.0, base_y + py * 4.0),
-        (tip_x, tip_y),
-        (base_x - px * 4.0, base_y - py * 4.0),
-        (tip_x - ux * 6.0, tip_y - uy * 6.0),
-    ]
 }
 
 fn shift_path_d(d: &str, dx: f32) -> String {

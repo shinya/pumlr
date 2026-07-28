@@ -22,8 +22,20 @@ const ACTIVATION_HALF_W: f32 = 5.0;
 const DB_CYL_W: f32 = 36.0;
 const DB_CYL_H: f32 = 46.0;
 const DB_CYL_CAP: f32 = 10.0;
-const SELF_MSG_WIDTH: f32 = 40.0;
-const SELF_MSG_HEIGHT: f32 = 30.0;
+const SELF_MSG_WIDTH: f32 = 42.0;
+const SELF_MSG_HEIGHT: f32 = 13.0;
+// Actor stick figure (participant head/tail icon)
+const ACTOR_HEAD_R: f32 = 8.0;
+const ACTOR_ICON_H: f32 = 58.0;
+const ACTOR_ARM_HALF: f32 = 13.0;
+// Circle-based icons (boundary / control / entity)
+const CIRCLE_ICON_R: f32 = 12.0;
+const CIRCLE_ICON_BLOCK_H: f32 = 29.0;
+// Queue horizontal cylinder
+const QUEUE_H: f32 = 26.5;
+const QUEUE_CAP: f32 = 5.0;
+// Collections stacked boxes offset
+const COLLECTIONS_OFFSET: f32 = 4.0;
 const DIAGRAM_MARGIN: f32 = 10.0;
 const TITLE_MARGIN: f32 = 10.0;
 
@@ -61,6 +73,9 @@ struct LayoutContext<'a> {
     fg_primitives: Vec<Primitive>,
     y_cursor: f32,
     auto_number: Option<u32>,
+    /// Rightmost extent of content that sticks out past the participants
+    /// (self-message loops, notes), used to widen the diagram.
+    max_right: f32,
     /// Currently open activations: (participant name, start y).
     active_participants: Vec<(String, f32)>,
     /// Finished activations: (participant name, start y, end y).
@@ -83,6 +98,7 @@ impl<'a> LayoutContext<'a> {
             fg_primitives: Vec::new(),
             y_cursor: DIAGRAM_MARGIN,
             auto_number: None,
+            max_right: 0.0,
             active_participants: Vec::new(),
             finished_activations: Vec::new(),
         }
@@ -148,8 +164,11 @@ impl<'a> LayoutContext<'a> {
             }));
         }
 
-        // Calculate total dimensions
-        let total_width = self.calculate_total_width();
+        // Calculate total dimensions (content like self-message loops and
+        // notes can stick out past the last participant)
+        let total_width = self
+            .calculate_total_width()
+            .max(self.max_right + DIAGRAM_MARGIN);
         let total_height = self.y_cursor;
 
         // Merge layers: background (lifelines) → groups → foreground (boxes, messages, notes)
@@ -171,10 +190,19 @@ impl<'a> LayoutContext<'a> {
             if let SequenceElement::ParticipantDecl(p) = element {
                 if !self.participants.iter().any(|pi| pi.name == p.name) {
                     let label = p.label.clone().unwrap_or_else(|| p.name.clone());
-                    let box_width = if p.kind == ParticipantKind::Database {
-                        self.title_measurer.measure_width(&label).max(DB_CYL_W)
-                    } else {
-                        self.title_measurer.measure_width(&label) + PARTICIPANT_PADDING_H * 2.0
+                    let label_w = self.title_measurer.measure_width(&label);
+                    let box_width = match p.kind {
+                        ParticipantKind::Database => label_w.max(DB_CYL_W),
+                        ParticipantKind::Actor => label_w.max(ACTOR_ARM_HALF * 2.0),
+                        ParticipantKind::Boundary => label_w.max(53.0),
+                        ParticipantKind::Control | ParticipantKind::Entity => {
+                            label_w.max(CIRCLE_ICON_R * 2.0)
+                        }
+                        ParticipantKind::Queue => label_w + 22.0,
+                        ParticipantKind::Collections => {
+                            label_w + PARTICIPANT_PADDING_H * 2.0 + COLLECTIONS_OFFSET
+                        }
+                        _ => label_w + PARTICIPANT_PADDING_H * 2.0,
                     };
                     self.participants.push(ParticipantInfo {
                         name: p.name.clone(),
@@ -287,19 +315,24 @@ impl<'a> LayoutContext<'a> {
         self.title_measurer.line_height() + PARTICIPANT_PADDING_V * 2.0
     }
 
-    /// Height of the participant head/tail row. Database cylinders are taller
-    /// than plain boxes; everything is aligned within this row height.
+    /// Height of the participant head/tail row. Database cylinders and actor
+    /// figures are taller than plain boxes; everything is aligned within this
+    /// row height.
     fn head_row_height(&self) -> f32 {
-        let box_h = self.participant_box_height();
-        let has_db = self
-            .participants
+        let label_lh = self.title_measurer.line_height();
+        self.participants
             .iter()
-            .any(|p| p.kind == ParticipantKind::Database);
-        if has_db {
-            box_h.max(DB_CYL_H + self.title_measurer.line_height())
-        } else {
-            box_h
-        }
+            .map(|p| match p.kind {
+                ParticipantKind::Database => DB_CYL_H + label_lh,
+                ParticipantKind::Actor => ACTOR_ICON_H + label_lh + 2.0,
+                ParticipantKind::Boundary | ParticipantKind::Control | ParticipantKind::Entity => {
+                    CIRCLE_ICON_BLOCK_H + label_lh + 2.0
+                }
+                ParticipantKind::Queue => QUEUE_H + 4.0,
+                ParticipantKind::Collections => self.participant_box_height() + COLLECTIONS_OFFSET,
+                _ => self.participant_box_height(),
+            })
+            .fold(self.participant_box_height(), f32::max)
     }
 
     fn participant_x(&self, name: &str) -> f32 {
@@ -363,6 +396,229 @@ impl<'a> LayoutContext<'a> {
                     fill: "black".into(),
                     anchor: TextAnchor::Middle,
                 }));
+            } else if matches!(
+                p.kind,
+                ParticipantKind::Boundary | ParticipantKind::Control | ParticipantKind::Entity
+            ) {
+                // Circle-based icons with the label below (head) / above (tail)
+                let (icon_top, label_baseline) = if bottom {
+                    (y + label_lh + 3.0, y + label_lh - 3.0)
+                } else {
+                    (
+                        y + row_h - CIRCLE_ICON_BLOCK_H - label_lh - 2.0,
+                        y + row_h - 3.0,
+                    )
+                };
+                let cx = p.x_center;
+                let cy = if p.kind == ParticipantKind::Control {
+                    icon_top + 5.0 + CIRCLE_ICON_R
+                } else {
+                    icon_top + CIRCLE_ICON_R
+                };
+                prims.push(Primitive::Path(Path {
+                    d: circle_path_at(cx, cy, CIRCLE_ICON_R),
+                    fill: self.theme.participant_bg_color().to_string(),
+                    stroke: self.theme.participant_border_color().to_string(),
+                    stroke_width: 0.5,
+                    dashed: false,
+                }));
+                match p.kind {
+                    ParticipantKind::Boundary => {
+                        // Vertical bar left of the circle, linked at the middle
+                        prims.push(Primitive::Path(Path {
+                            d: format!(
+                                "M {},{} L {},{} M {},{} L {},{}",
+                                cx - 29.0,
+                                cy - CIRCLE_ICON_R,
+                                cx - 29.0,
+                                cy + CIRCLE_ICON_R,
+                                cx - 29.0,
+                                cy,
+                                cx - CIRCLE_ICON_R,
+                                cy,
+                            ),
+                            fill: "none".into(),
+                            stroke: self.theme.participant_border_color().to_string(),
+                            stroke_width: 0.5,
+                            dashed: false,
+                        }));
+                    }
+                    ParticipantKind::Control => {
+                        // Small arrowhead on top of the circle
+                        let t = cy - CIRCLE_ICON_R;
+                        prims.push(Primitive::Polygon(Polygon {
+                            points: vec![
+                                (cx - 4.0, t),
+                                (cx + 2.0, t - 5.0),
+                                (cx, t),
+                                (cx + 2.0, t + 5.0),
+                            ],
+                            fill: self.theme.participant_border_color().to_string(),
+                            stroke: "none".into(),
+                            stroke_width: 0.0,
+                        }));
+                    }
+                    ParticipantKind::Entity => {
+                        // Underline below the circle
+                        prims.push(Primitive::Line(Line {
+                            x1: cx - CIRCLE_ICON_R,
+                            y1: cy + CIRCLE_ICON_R + 2.0,
+                            x2: cx + CIRCLE_ICON_R,
+                            y2: cy + CIRCLE_ICON_R + 2.0,
+                            stroke: self.theme.participant_border_color().to_string(),
+                            stroke_width: 0.5,
+                        }));
+                    }
+                    _ => {}
+                }
+                prims.push(Primitive::Text(Text {
+                    bold: false,
+                    x: cx,
+                    y: label_baseline,
+                    content: p.label.clone(),
+                    font_size: self.theme.participant_font_size(),
+                    font_family: self.theme.font_family().to_string(),
+                    fill: "black".into(),
+                    anchor: TextAnchor::Middle,
+                }));
+            } else if p.kind == ParticipantKind::Queue {
+                // Horizontal cylinder with the label inside
+                let top = if bottom {
+                    y + 2.0
+                } else {
+                    y + row_h - QUEUE_H - 2.0
+                };
+                let bot = top + QUEUE_H;
+                let cy = top + QUEUE_H / 2.0;
+                let l = p.x_center - p.box_width / 2.0 + QUEUE_CAP;
+                let r = p.x_center + p.box_width / 2.0 - QUEUE_CAP;
+                prims.push(Primitive::Path(Path {
+                    d: format!(
+                        "M {l},{top} L {r},{top} C {rc},{top} {rc},{cy} {rc},{cy} C {rc},{cy} {rc},{bot} {r},{bot} L {l},{bot} C {lc},{bot} {lc},{cy} {lc},{cy} C {lc},{cy} {lc},{top} {l},{top}",
+                        l = l,
+                        r = r,
+                        top = top,
+                        bot = bot,
+                        cy = cy,
+                        rc = r + QUEUE_CAP,
+                        lc = l - QUEUE_CAP,
+                    ),
+                    fill: self.theme.participant_bg_color().to_string(),
+                    stroke: self.theme.participant_border_color().to_string(),
+                    stroke_width: 0.5,
+                    dashed: false,
+                }));
+                // Inner lens on the right end
+                prims.push(Primitive::Path(Path {
+                    d: format!(
+                        "M {r},{top} C {ri},{top} {ri},{cy} {ri},{cy} C {ri},{bot} {r},{bot} {r},{bot}",
+                        r = r,
+                        ri = r - QUEUE_CAP,
+                        top = top,
+                        bot = bot,
+                        cy = cy,
+                    ),
+                    fill: "none".into(),
+                    stroke: self.theme.participant_border_color().to_string(),
+                    stroke_width: 0.5,
+                    dashed: false,
+                }));
+                prims.push(Primitive::Text(Text {
+                    bold: false,
+                    x: p.x_center - QUEUE_CAP,
+                    y: cy + 5.0,
+                    content: p.label.clone(),
+                    font_size: self.theme.participant_font_size(),
+                    font_family: self.theme.font_family().to_string(),
+                    fill: "black".into(),
+                    anchor: TextAnchor::Middle,
+                }));
+            } else if p.kind == ParticipantKind::Collections {
+                // Two stacked boxes; label inside the front (lower-left) one
+                let front_w = p.box_width - COLLECTIONS_OFFSET;
+                let (front_y, back_y) = if bottom {
+                    (y + COLLECTIONS_OFFSET, y)
+                } else {
+                    (y + row_h - box_h, y + row_h - box_h - COLLECTIONS_OFFSET)
+                };
+                let front_x = p.x_center - p.box_width / 2.0;
+                for (bx, by) in [(front_x + COLLECTIONS_OFFSET, back_y), (front_x, front_y)] {
+                    prims.push(Primitive::Rect(Rect {
+                        x: bx,
+                        y: by,
+                        width: front_w,
+                        height: box_h,
+                        fill: self.theme.participant_bg_color().to_string(),
+                        stroke: self.theme.participant_border_color().to_string(),
+                        stroke_width: 0.5,
+                        rx: 0.0,
+                        ry: 0.0,
+                    }));
+                }
+                prims.push(Primitive::Text(Text {
+                    bold: false,
+                    x: front_x + front_w / 2.0,
+                    y: front_y + box_h / 2.0 + self.title_measurer.line_height() * 0.32,
+                    content: p.label.clone(),
+                    font_size: self.theme.participant_font_size(),
+                    font_family: self.theme.font_family().to_string(),
+                    fill: "black".into(),
+                    anchor: TextAnchor::Middle,
+                }));
+            } else if p.kind == ParticipantKind::Actor {
+                // Stick figure with the label below (head) / above (tail)
+                let (icon_top, label_baseline) = if bottom {
+                    (y + label_lh + 3.0, y + label_lh - 3.0)
+                } else {
+                    (y + row_h - ACTOR_ICON_H - label_lh - 2.0, y + row_h - 3.0)
+                };
+                prims.push(Primitive::Path(Path {
+                    d: circle_path_at(p.x_center, icon_top + ACTOR_HEAD_R, ACTOR_HEAD_R),
+                    fill: self.theme.participant_bg_color().to_string(),
+                    stroke: self.theme.participant_border_color().to_string(),
+                    stroke_width: 0.5,
+                    dashed: false,
+                }));
+                let cx = p.x_center;
+                let neck = icon_top + ACTOR_HEAD_R * 2.0;
+                let hip = neck + 27.0;
+                let feet = icon_top + ACTOR_ICON_H;
+                let arms = neck + 8.0;
+                prims.push(Primitive::Path(Path {
+                    d: format!(
+                        "M {},{} L {},{} M {},{} L {},{} M {},{} L {},{} M {},{} L {},{}",
+                        cx,
+                        neck,
+                        cx,
+                        hip,
+                        cx - ACTOR_ARM_HALF,
+                        arms,
+                        cx + ACTOR_ARM_HALF,
+                        arms,
+                        cx,
+                        hip,
+                        cx - ACTOR_ARM_HALF,
+                        feet,
+                        cx,
+                        hip,
+                        cx + ACTOR_ARM_HALF,
+                        feet,
+                    ),
+                    fill: "none".into(),
+                    stroke: self.theme.participant_border_color().to_string(),
+                    stroke_width: 0.5,
+                    dashed: false,
+                }));
+                prims.push(Primitive::Text(Text {
+                    bold: false,
+                    x: cx,
+                    y: label_baseline,
+                    content: p.label.clone(),
+                    font_size: self.theme.participant_font_size(),
+                    font_family: self.theme.font_family().to_string(),
+                    fill: "black".into(),
+                    anchor: TextAnchor::Middle,
+                }));
             } else {
                 let box_y = if bottom { y } else { y + row_h - box_h };
                 prims.push(Primitive::Rect(Rect {
@@ -406,12 +662,23 @@ impl<'a> LayoutContext<'a> {
     }
 
     fn layout_elements(&mut self, elements: &[SequenceElement]) {
-        for element in elements {
+        let mut i = 0;
+        while i < elements.len() {
+            let element = &elements[i];
             match element {
                 SequenceElement::ParticipantDecl(_) => {
                     // Already handled
                 }
-                SequenceElement::Message(msg) => self.layout_message(msg),
+                SequenceElement::Message(msg) => {
+                    // Activations declared right after a message start at that
+                    // message's line (the arrow stops at the new bar's edge).
+                    let mut pending = Vec::new();
+                    while let Some(SequenceElement::Activate(name)) = elements.get(i + 1) {
+                        pending.push(name.clone());
+                        i += 1;
+                    }
+                    self.layout_message(msg, &pending);
+                }
                 SequenceElement::Note(note) => self.layout_note(note),
                 SequenceElement::Group(group) => self.layout_group(group),
                 SequenceElement::Separator(sep) => self.layout_separator(sep),
@@ -438,13 +705,25 @@ impl<'a> LayoutContext<'a> {
                     self.y_cursor += n.unwrap_or(15) as f32;
                 }
             }
+            i += 1;
         }
     }
 
-    fn layout_message(&mut self, msg: &Message) {
+    /// Whether `name` currently has an open activation bar.
+    fn is_active(&self, name: &str) -> bool {
+        self.active_participants.iter().any(|(n, _)| n == name)
+    }
+
+    fn layout_message(&mut self, msg: &Message, pending_activations: &[String]) {
         // The message line sits MESSAGE_SPACING below the previous row;
         // the label is drawn just above the line.
         let y = self.y_cursor + MESSAGE_SPACING;
+
+        // Bars activated by this message start at its line, and the arrow
+        // already stops at the new bar's edge.
+        for name in pending_activations {
+            self.active_participants.push((name.clone(), y));
+        }
 
         let mut label = msg.label.clone();
         if let Some(ref mut num) = self.auto_number {
@@ -454,16 +733,35 @@ impl<'a> LayoutContext<'a> {
 
         if msg.is_self_referencing {
             self.layout_self_message(msg, &label, y);
+            self.y_cursor = y + SELF_MSG_HEIGHT;
         } else {
             self.layout_normal_message(msg, &label, y);
+            self.y_cursor = y;
         }
-
-        self.y_cursor = y;
     }
 
     fn layout_normal_message(&mut self, msg: &Message, label: &str, y: f32) {
         let from_x = self.participant_x(&msg.from);
         let to_x = self.participant_x(&msg.to);
+
+        // Endpoints stop at activation bar edges: the source line starts at
+        // the bar's side, the arrow tip stops 2px short of the target bar
+        // (1px short of the bare lifeline).
+        let from_edge = if self.is_active(&msg.from) {
+            ACTIVATION_HALF_W
+        } else {
+            0.0
+        };
+        let to_edge = if self.is_active(&msg.to) {
+            ACTIVATION_HALF_W + 2.0
+        } else {
+            1.0
+        };
+        let (x1, x2) = if from_x <= to_x {
+            (from_x + from_edge, to_x - to_edge)
+        } else {
+            (from_x - from_edge, to_x + to_edge)
+        };
 
         let dashed = msg.arrow.line == LineStyle::Dashed;
         let head = match msg.arrow.head {
@@ -473,9 +771,9 @@ impl<'a> LayoutContext<'a> {
 
         // Arrow line
         self.fg_primitives.push(Primitive::Arrow(Arrow {
-            x1: from_x,
+            x1,
             y1: y,
-            x2: to_x,
+            x2,
             y2: y,
             stroke: self.theme.arrow_color().to_string(),
             stroke_width: 1.0,
@@ -484,14 +782,10 @@ impl<'a> LayoutContext<'a> {
         }));
 
         // Label above the arrow, anchored near the arrow's left end
-        // (PlantUML: 7px right of the source going right, 17px right of the
+        // (PlantUML: 7px right of the source going right, 16px right of the
         // arrowhead going left).
         if !label.is_empty() {
-            let (label_x, anchor) = if from_x <= to_x {
-                (from_x + 7.0, TextAnchor::Start)
-            } else {
-                (to_x + 17.0, TextAnchor::Start)
-            };
+            let label_x = if from_x <= to_x { x1 + 7.0 } else { x2 + 16.0 };
             self.fg_primitives.push(Primitive::Text(Text {
                 bold: false,
                 x: label_x,
@@ -500,7 +794,7 @@ impl<'a> LayoutContext<'a> {
                 font_size: self.theme.font_size(),
                 font_family: self.theme.font_family().to_string(),
                 fill: "black".into(),
-                anchor,
+                anchor: TextAnchor::Start,
             }));
         }
     }
@@ -509,83 +803,64 @@ impl<'a> LayoutContext<'a> {
         let x = self.participant_x(&msg.from);
         let dashed = msg.arrow.line == LineStyle::Dashed;
 
-        // Self-referencing message: draw a U-shape to the right
-        let x_right = x + SELF_MSG_WIDTH;
+        // PlantUML shape: out to the right from the bar/lifeline edge,
+        // a short drop, and back with a left-pointing arrowhead.
+        let edge = if self.is_active(&msg.from) {
+            ACTIVATION_HALF_W
+        } else {
+            0.0
+        };
+        let x0 = x + edge;
+        let x_right = x0 + SELF_MSG_WIDTH;
         let y_bottom = y + SELF_MSG_HEIGHT;
 
-        let d = format!(
-            "M {},{} L {},{} L {},{} L {},{}",
-            x, y, x_right, y, x_right, y_bottom, x, y_bottom,
-        );
-
         self.fg_primitives.push(Primitive::Path(Path {
-            d,
+            d: format!(
+                "M {},{} L {},{} L {},{} L {},{}",
+                x0,
+                y,
+                x_right,
+                y,
+                x_right,
+                y_bottom,
+                x0 + 1.0,
+                y_bottom,
+            ),
             fill: "none".into(),
             stroke: self.theme.arrow_color().to_string(),
             stroke_width: 1.0,
             dashed,
         }));
 
-        // Arrowhead at end
-        let head = match msg.arrow.head {
-            ArrowHead::Filled => ArrowHeadStyle::Filled,
-            ArrowHead::Open => ArrowHeadStyle::Open,
-        };
-        // Small arrowhead pointing left at (x, y_bottom)
-        let head_size = 6.0;
-        match head {
-            ArrowHeadStyle::Filled => {
-                self.fg_primitives.push(Primitive::Polygon(Polygon {
-                    points: vec![
-                        (x, y_bottom),
-                        (x + head_size, y_bottom - head_size / 2.0),
-                        (x + head_size, y_bottom + head_size / 2.0),
-                    ],
-                    fill: self.theme.arrow_color().to_string(),
-                    stroke: "none".into(),
-                    stroke_width: 0.0,
-                }));
-            }
-            ArrowHeadStyle::Open => {
-                self.fg_primitives.push(Primitive::Path(Path {
-                    d: format!(
-                        "M {},{} L {},{} M {},{} L {},{}",
-                        x + head_size,
-                        y_bottom - head_size / 2.0,
-                        x,
-                        y_bottom,
-                        x,
-                        y_bottom,
-                        x + head_size,
-                        y_bottom + head_size / 2.0,
-                    ),
-                    fill: "none".into(),
-                    stroke: self.theme.arrow_color().to_string(),
-                    stroke_width: 1.0,
-                    dashed: false,
-                }));
-            }
-        }
+        // Left-pointing arrowhead back into the lifeline/bar
+        self.fg_primitives.push(Primitive::Polygon(Polygon {
+            points: concave_head(x0 + 1.0, y_bottom, -1.0, 0.0),
+            fill: self.theme.arrow_color().to_string(),
+            stroke: "none".into(),
+            stroke_width: 0.0,
+        }));
 
-        // Label
+        // Label above the top line
         if !label.is_empty() {
             self.fg_primitives.push(Primitive::Text(Text {
                 bold: false,
-                x: x + SELF_MSG_WIDTH + 4.0,
-                y: y + SELF_MSG_HEIGHT / 2.0 + 4.0,
+                x: x0 + 7.0,
+                y: y - 5.0,
                 content: label.to_string(),
                 font_size: self.theme.font_size(),
                 font_family: self.theme.font_family().to_string(),
                 fill: "black".into(),
                 anchor: TextAnchor::Start,
             }));
+            self.max_right = self
+                .max_right
+                .max(x0 + 7.0 + self.measurer.measure_width(label));
         }
-
-        self.y_cursor += SELF_MSG_HEIGHT;
+        self.max_right = self.max_right.max(x_right);
     }
 
     fn layout_note(&mut self, note: &Note) {
-        let note_width =
+        let mut note_width =
             self.measurer.measure_multiline_width(&note.text) + NOTE_PADDING * 2.0 + NOTE_FOLD;
         let note_height = self.measurer.measure_multiline_height(&note.text) + NOTE_PADDING * 2.0;
 
@@ -603,6 +878,7 @@ impl<'a> LayoutContext<'a> {
                     let px = self.participant_x(&names[0]);
                     (px - note_width / 2.0, self.y_cursor)
                 } else {
+                    // Span all named lifelines, extending 10px past each side
                     let min_x = names
                         .iter()
                         .map(|n| self.participant_x(n))
@@ -611,6 +887,7 @@ impl<'a> LayoutContext<'a> {
                         .iter()
                         .map(|n| self.participant_x(n))
                         .fold(f32::MIN, f32::max);
+                    note_width = note_width.max(max_x - min_x + 20.0);
                     let center = (min_x + max_x) / 2.0;
                     (center - note_width / 2.0, self.y_cursor)
                 }
@@ -671,6 +948,7 @@ impl<'a> LayoutContext<'a> {
         }));
 
         self.y_cursor += note_height + PADDING;
+        self.max_right = self.max_right.max(x + note_width);
     }
 
     fn layout_group(&mut self, group: &Group) {
@@ -894,6 +1172,21 @@ impl<'a> LayoutContext<'a> {
         let last = self.participants.last().unwrap();
         last.x_center + last.box_width / 2.0 + DIAGRAM_MARGIN
     }
+}
+
+/// Circle as an SVG path (two arcs).
+fn circle_path_at(cx: f32, cy: f32, r: f32) -> String {
+    format!(
+        "M {},{} a {},{} 0 1,0 {},0 a {},{} 0 1,0 {},0",
+        cx - r,
+        cy,
+        r,
+        r,
+        r * 2.0,
+        r,
+        r,
+        -(r * 2.0),
+    )
 }
 
 /// Database cylinder body centered at `cx`, top edge at `top`.

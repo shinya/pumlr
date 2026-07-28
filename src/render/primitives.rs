@@ -83,6 +83,22 @@ pub enum ArrowHeadStyle {
     Open,
 }
 
+/// PlantUML-style concave arrowhead: tip at (tip_x, tip_y), pointing along the
+/// unit vector (ux, uy). Length 10, half-width 4, notch 6 back from the tip.
+pub fn concave_head(tip_x: f32, tip_y: f32, ux: f32, uy: f32) -> Vec<(f32, f32)> {
+    let base_x = tip_x - ux * 10.0;
+    let base_y = tip_y - uy * 10.0;
+    // Perpendicular
+    let px = -uy;
+    let py = ux;
+    vec![
+        (base_x + px * 4.0, base_y + py * 4.0),
+        (tip_x, tip_y),
+        (base_x - px * 4.0, base_y - py * 4.0),
+        (tip_x - ux * 6.0, tip_y - uy * 6.0),
+    ]
+}
+
 #[derive(Debug, Clone)]
 pub struct Polygon {
     pub points: Vec<(f32, f32)>,

@@ -1,0 +1,12 @@
+@startuml
+participant Alice
+participant Bob
+participant Carol
+
+Alice -> Bob : Request
+note over Alice, Bob : Shared context note
+Bob -> Carol : Forward
+note left of Bob : Left side note
+note over Carol : Single note
+Carol --> Alice : Done
+@enduml

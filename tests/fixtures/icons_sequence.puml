@@ -1,0 +1,12 @@
+@startuml
+boundary Web
+control Dispatcher
+entity Order
+queue Jobs
+collections Workers
+
+Web -> Dispatcher : route
+Dispatcher -> Order : load
+Order -> Jobs : enqueue
+Jobs -> Workers : distribute
+@enduml

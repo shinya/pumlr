@@ -1,0 +1,10 @@
+@startuml
+actor User
+participant App
+
+User -> App : Click button
+activate App
+App -> App : Validate
+App --> User : Show result
+deactivate App
+@enduml

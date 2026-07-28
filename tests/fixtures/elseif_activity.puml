@@ -1,0 +1,12 @@
+@startuml
+start
+if (color?) then (red)
+  :Paint Red;
+elseif (blue?) then (yes)
+  :Paint Blue;
+else (green)
+  :Paint Green;
+endif
+:Done;
+stop
+@enduml

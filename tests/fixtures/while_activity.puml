@@ -1,0 +1,10 @@
+@startuml
+start
+:Read Config;
+while (More items?) is (yes)
+  :Process Item;
+  :Update Counter;
+endwhile (no)
+:Write Report;
+stop
+@enduml

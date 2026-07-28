@@ -1,0 +1,13 @@
+@startuml
+start
+switch (Grade?)
+case (A)
+  :Excellent;
+case (B)
+  :Good;
+case (C)
+  :Average;
+endswitch
+:Record Result;
+stop
+@enduml

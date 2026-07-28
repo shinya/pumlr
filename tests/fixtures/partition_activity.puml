@@ -1,0 +1,11 @@
+@startuml
+start
+partition Initialization {
+  :Load Settings;
+  :Connect Database;
+}
+partition Processing {
+  :Run Job;
+}
+stop
+@enduml
