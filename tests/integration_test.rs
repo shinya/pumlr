@@ -1,4 +1,4 @@
-use plantuml_rust::{detect_diagram_type, render_svg, DiagramType, PlantUmlError};
+use pumlr::{detect_diagram_type, render_svg, DiagramType, PlantUmlError};
 
 #[test]
 fn test_render_simple_sequence() {
@@ -47,7 +47,8 @@ end
 
     let svg = render_svg(input).unwrap();
     assert!(svg.contains("alt"));
-    assert!(svg.contains("else"));
+    // Like PlantUML, the else section shows its condition in brackets
+    assert!(svg.contains("[error]"));
 }
 
 #[test]
@@ -239,7 +240,7 @@ DB --> Alice : result
     assert!(svg.contains("result"));
 
     // Count participant boxes: should be exactly 2 (Alice, DB) x 2 (top+bottom) = 4
-    let participant_fill_count = svg.matches(r##"fill="#FEFECE""##).count();
+    let participant_fill_count = svg.matches(r##"fill="#E2E2F0""##).count();
     assert_eq!(participant_fill_count, 4, "expected 4 participant boxes (2 participants x top/bottom), got {}", participant_fill_count);
 }
 

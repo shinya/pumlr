@@ -2,35 +2,55 @@ use crate::ast::activity::*;
 use crate::layout::text_measure::TextMeasurer;
 use crate::render::primitives::*;
 use crate::render::svg::LaidOutDiagram;
-use crate::theme::{DefaultTheme, Theme};
+
+// --- Layout metrics (matched against PlantUML 1.2026 default style, see SPEC.md) ---
 
 const DIAGRAM_MARGIN: f32 = 20.0;
-const ACTION_PADDING_H: f32 = 16.0;
+const ACTION_PADDING_H: f32 = 10.0;
 const ACTION_PADDING_V: f32 = 10.0;
-const ACTION_RADIUS: f32 = 10.0;
+const ACTION_RADIUS: f32 = 12.5;
 const ARROW_SPACING: f32 = 20.0;
-// Used as default by draw_diamond (which is kept for tests/future use)
-#[allow(dead_code)]
-const DIAMOND_SIZE: f32 = 14.0;
-const MIN_DIAMOND_SIZE: f32 = 16.0;
-/// Small diamond for merge points (no text)
-const MERGE_DIAMOND_SIZE: f32 = 14.0;
-const START_STOP_RADIUS: f32 = 12.0;
-const MIN_ACTION_WIDTH: f32 = 80.0;
+/// Condition hexagon: horizontal extension of the side points beyond the text box.
+const HEX_EXTEND: f32 = 12.0;
+/// Condition hexagon: half height.
+const HEX_HALF_H: f32 = 12.0;
+/// Merge diamond: half width/height.
+const MERGE_HALF: f32 = 12.0;
+/// Gap between the condition hexagon bottom and the top of a branch.
+const BRANCH_TOP_GAP: f32 = 10.0;
+/// Gap between a branch bottom and the top of the merge diamond.
+const MERGE_TOP_GAP: f32 = 6.0;
+const START_RADIUS: f32 = 10.0;
+const STOP_OUTER_RADIUS: f32 = 11.0;
+const STOP_INNER_RADIUS: f32 = 6.0;
 const BRANCH_GAP: f32 = 30.0;
 const NOTE_PADDING: f32 = 8.0;
 const NOTE_MARGIN: f32 = 10.0;
 const PARTITION_PADDING: f32 = 12.0;
 const TITLE_MARGIN: f32 = 10.0;
-const FORK_BAR_HEIGHT: f32 = 4.0;
+const FORK_BAR_HEIGHT: f32 = 6.0;
 const FORK_BAR_EXTEND: f32 = 20.0;
+
+// --- Style (PlantUML 1.2026 default) ---
+
+const SHAPE_FILL: &str = "#F1F1F1";
+const SHAPE_STROKE: &str = "#181818";
+const SHAPE_STROKE_W: f32 = 0.5;
+const START_STOP_COLOR: &str = "#222222";
+const EDGE_COLOR: &str = "#181818";
+const TEXT_COLOR: &str = "#000000";
+const FONT_FAMILY: &str = "sans-serif";
+const FONT_SIZE: f32 = 12.0;
+const LABEL_FONT_SIZE: f32 = 11.0;
+const TITLE_FONT_SIZE: f32 = 14.0;
+const NOTE_FILL: &str = "#FEFFDD";
 
 /// Layout a parsed activity diagram into primitives.
 pub fn layout(diagram: &ActivityDiagram) -> LaidOutDiagram {
-    let theme = DefaultTheme;
-    let measurer = TextMeasurer::new(theme.font_size());
+    let measurer = TextMeasurer::new(FONT_SIZE);
+    let label_measurer = TextMeasurer::new(LABEL_FONT_SIZE);
 
-    let mut ctx = ActivityLayoutContext::new(&theme, &measurer);
+    let mut ctx = ActivityLayoutContext::new(&measurer, &label_measurer);
     ctx.layout(diagram)
 }
 
@@ -44,16 +64,16 @@ struct SubtreeBox {
 }
 
 struct ActivityLayoutContext<'a> {
-    theme: &'a dyn Theme,
     measurer: &'a TextMeasurer,
+    label_measurer: &'a TextMeasurer,
     primitives: Vec<Primitive>,
 }
 
 impl<'a> ActivityLayoutContext<'a> {
-    fn new(theme: &'a dyn Theme, measurer: &'a TextMeasurer) -> Self {
+    fn new(measurer: &'a TextMeasurer, label_measurer: &'a TextMeasurer) -> Self {
         Self {
-            theme,
             measurer,
+            label_measurer,
             primitives: Vec::new(),
         }
     }
@@ -74,15 +94,17 @@ impl<'a> ActivityLayoutContext<'a> {
         let start_x = DIAGRAM_MARGIN + subtree.center_x;
         let mut y = DIAGRAM_MARGIN;
 
+        let title_index = diagram.title.as_ref().map(|_| self.primitives.len());
         if let Some(title) = &diagram.title {
             self.primitives.push(Primitive::Text(Text {
-                x: start_x, // will be re-centered by post-process shift
+                x: start_x, // re-centered on the final diagram width below
                 y: y + self.measurer.line_height(),
                 content: title.clone(),
-                font_size: self.theme.participant_font_size() + 2.0,
-                font_family: self.theme.font_family().to_string(),
-                fill: "black".into(),
+                font_size: TITLE_FONT_SIZE,
+                font_family: FONT_FAMILY.into(),
+                fill: TEXT_COLOR.into(),
                 anchor: TextAnchor::Middle,
+                bold: true,
             }));
             y += self.measurer.line_height() + TITLE_MARGIN;
         }
@@ -101,7 +123,15 @@ impl<'a> ActivityLayoutContext<'a> {
             self.shift_all_x(shift);
         }
 
-        let actual_width = (max_x + shift + DIAGRAM_MARGIN).max(subtree.width + DIAGRAM_MARGIN * 2.0);
+        let actual_width =
+            (max_x + shift + DIAGRAM_MARGIN).max(subtree.width + DIAGRAM_MARGIN * 2.0);
+
+        // Center the title on the final diagram width (like PlantUML does).
+        if let Some(i) = title_index {
+            if let Primitive::Text(t) = &mut self.primitives[i] {
+                t.x = actual_width / 2.0;
+            }
+        }
 
         LaidOutDiagram {
             width: actual_width,
@@ -138,10 +168,15 @@ impl<'a> ActivityLayoutContext<'a> {
 
     fn measure_element(&self, element: &ActivityElement) -> SubtreeBox {
         match element {
-            ActivityElement::Start | ActivityElement::Stop | ActivityElement::End => SubtreeBox {
-                width: START_STOP_RADIUS * 2.0,
-                height: START_STOP_RADIUS * 2.0,
-                center_x: START_STOP_RADIUS,
+            ActivityElement::Start => SubtreeBox {
+                width: START_RADIUS * 2.0,
+                height: START_RADIUS * 2.0,
+                center_x: START_RADIUS,
+            },
+            ActivityElement::Stop | ActivityElement::End => SubtreeBox {
+                width: STOP_OUTER_RADIUS * 2.0,
+                height: STOP_OUTER_RADIUS * 2.0,
+                center_x: STOP_OUTER_RADIUS,
             },
             ActivityElement::Detach => SubtreeBox {
                 width: 30.0,
@@ -151,7 +186,7 @@ impl<'a> ActivityLayoutContext<'a> {
             ActivityElement::Action(action) => {
                 let text_w = self.measurer.measure_multiline_width(&action.label);
                 let text_h = self.measurer.measure_multiline_height(&action.label);
-                let w = (text_w + ACTION_PADDING_H * 2.0).max(MIN_ACTION_WIDTH);
+                let w = text_w + ACTION_PADDING_H * 2.0;
                 let h = text_h + ACTION_PADDING_V * 2.0;
                 SubtreeBox {
                     width: w,
@@ -165,7 +200,8 @@ impl<'a> ActivityLayoutContext<'a> {
             ActivityElement::Switch(block) => self.measure_switch(block),
             ActivityElement::Partition(partition) => {
                 let inner = self.measure_elements(&partition.elements);
-                let label_w = self.measurer.measure_width(&partition.name) + PARTITION_PADDING * 2.0;
+                let label_w =
+                    self.measurer.measure_width(&partition.name) + PARTITION_PADDING * 2.0;
                 let w = inner.width.max(label_w) + PARTITION_PADDING * 2.0;
                 let h = inner.height + PARTITION_PADDING * 2.0 + self.measurer.line_height();
                 SubtreeBox {
@@ -194,11 +230,16 @@ impl<'a> ActivityLayoutContext<'a> {
         }
     }
 
+    /// Full width of the condition hexagon for the given text.
+    fn hex_width(&self, text: &str) -> f32 {
+        self.label_measurer.measure_width(text) + HEX_EXTEND * 2.0
+    }
+
     fn measure_if(&self, block: &IfBlock) -> SubtreeBox {
         let then_box = self.measure_elements(&block.then_elements);
         let else_box = self.measure_elements(&block.else_elements);
 
-        let diamond_sz = self.diamond_size_for_text(&block.condition);
+        let hex_w = self.hex_width(&block.condition);
 
         // Branches width = then + gap + else (+ elseif branches)
         let mut branches_width = then_box.width + BRANCH_GAP + else_box.width;
@@ -210,10 +251,13 @@ impl<'a> ActivityLayoutContext<'a> {
             max_branch_height = max_branch_height.max(b.height);
         }
 
-        // Diamond at visual center of branches (symmetric placement)
-        let total_width = branches_width.max(diamond_sz * 2.0);
+        let total_width = branches_width.max(hex_w).max(MERGE_HALF * 2.0);
         let center_x = total_width / 2.0;
-        let h = diamond_sz * 2.0 + ARROW_SPACING * 2.0 + max_branch_height + MERGE_DIAMOND_SIZE * 2.0;
+        let h = HEX_HALF_H * 2.0
+            + BRANCH_TOP_GAP
+            + max_branch_height
+            + MERGE_TOP_GAP
+            + MERGE_HALF * 2.0;
         SubtreeBox {
             width: total_width,
             height: h,
@@ -222,10 +266,10 @@ impl<'a> ActivityLayoutContext<'a> {
     }
 
     fn measure_while(&self, block: &WhileBlock) -> SubtreeBox {
-        let dsz = self.diamond_size_for_text(&block.condition);
+        let hex_w = self.hex_width(&block.condition);
         let inner = self.measure_elements(&block.elements);
-        let w = inner.width + BRANCH_GAP;
-        let h = dsz * 2.0 + ARROW_SPACING + inner.height + ARROW_SPACING;
+        let w = inner.width.max(hex_w) + BRANCH_GAP;
+        let h = HEX_HALF_H * 2.0 + ARROW_SPACING + inner.height + ARROW_SPACING;
         SubtreeBox {
             width: w,
             height: h,
@@ -263,10 +307,9 @@ impl<'a> ActivityLayoutContext<'a> {
             + BRANCH_GAP * (case_boxes.len().saturating_sub(1) as f32);
         let max_height = case_boxes.iter().map(|b| b.height).fold(0.0f32, f32::max);
 
-        let dsz = self.diamond_size_for_text(&block.condition);
-        let h = dsz * 2.0 + ARROW_SPACING + max_height + ARROW_SPACING + MERGE_DIAMOND_SIZE * 2.0;
+        let h = HEX_HALF_H * 2.0 + BRANCH_TOP_GAP + max_height + MERGE_TOP_GAP + MERGE_HALF * 2.0;
         SubtreeBox {
-            width: total_width,
+            width: total_width.max(self.hex_width(&block.condition)),
             height: h,
             center_x: total_width / 2.0,
         }
@@ -290,24 +333,18 @@ impl<'a> ActivityLayoutContext<'a> {
     fn draw_element(&mut self, element: &ActivityElement, center_x: f32, y: f32) -> f32 {
         match element {
             ActivityElement::Start => {
-                self.draw_filled_circle(center_x, y + START_STOP_RADIUS, START_STOP_RADIUS);
-                y + START_STOP_RADIUS * 2.0
+                self.draw_filled_circle(center_x, y + START_RADIUS, START_RADIUS);
+                y + START_RADIUS * 2.0
             }
-            ActivityElement::Stop => {
-                self.draw_stop_circle(center_x, y + START_STOP_RADIUS, START_STOP_RADIUS);
-                y + START_STOP_RADIUS * 2.0
-            }
-            ActivityElement::End => {
-                self.draw_stop_circle(center_x, y + START_STOP_RADIUS, START_STOP_RADIUS);
-                y + START_STOP_RADIUS * 2.0
+            ActivityElement::Stop | ActivityElement::End => {
+                self.draw_stop_circle(center_x, y + STOP_OUTER_RADIUS);
+                y + STOP_OUTER_RADIUS * 2.0
             }
             ActivityElement::Detach => {
                 self.draw_detach(center_x, y);
                 y + 20.0
             }
-            ActivityElement::Action(action) => {
-                self.draw_action(action, center_x, y)
-            }
+            ActivityElement::Action(action) => self.draw_action(action, center_x, y),
             ActivityElement::If(block) => self.draw_if(block, center_x, y),
             ActivityElement::While(block) => self.draw_while(block, center_x, y),
             ActivityElement::Fork(block) => self.draw_fork(block, center_x, y),
@@ -329,7 +366,7 @@ impl<'a> ActivityLayoutContext<'a> {
     fn draw_action(&mut self, action: &Action, center_x: f32, y: f32) -> f32 {
         let text_w = self.measurer.measure_multiline_width(&action.label);
         let text_h = self.measurer.measure_multiline_height(&action.label);
-        let w = (text_w + ACTION_PADDING_H * 2.0).max(MIN_ACTION_WIDTH);
+        let w = text_w + ACTION_PADDING_H * 2.0;
         let h = text_h + ACTION_PADDING_V * 2.0;
 
         self.primitives.push(Primitive::Rect(Rect {
@@ -337,21 +374,27 @@ impl<'a> ActivityLayoutContext<'a> {
             y,
             width: w,
             height: h,
-            fill: "#FEFECE".into(),
-            stroke: "#A80036".into(),
-            stroke_width: 1.5,
+            fill: SHAPE_FILL.into(),
+            stroke: SHAPE_STROKE.into(),
+            stroke_width: SHAPE_STROKE_W,
             rx: ACTION_RADIUS,
             ry: ACTION_RADIUS,
         }));
 
+        // Vertically center the text block: place the first baseline so that
+        // n lines (at 1.2em tspan spacing) sit around the rect middle.
+        let line_count = action.label.lines().count().max(1) as f32;
+        let tspan_step = FONT_SIZE * 1.2;
+        let first_baseline = y + h / 2.0 - (line_count - 1.0) * tspan_step / 2.0 + FONT_SIZE * 0.35;
         self.primitives.push(Primitive::Text(Text {
             x: center_x,
-            y: y + h / 2.0 + self.measurer.line_height() * 0.3,
+            y: first_baseline,
             content: action.label.clone(),
-            font_size: self.theme.font_size(),
-            font_family: self.theme.font_family().to_string(),
-            fill: "#333333".into(),
+            font_size: FONT_SIZE,
+            font_family: FONT_FAMILY.into(),
+            fill: TEXT_COLOR.into(),
             anchor: TextAnchor::Middle,
+            bold: false,
         }));
 
         y + h
@@ -361,55 +404,39 @@ impl<'a> ActivityLayoutContext<'a> {
         let total_box = self.measure_if(block);
         let then_box = self.measure_elements(&block.then_elements);
         let else_box = self.measure_elements(&block.else_elements);
-        let dsz = self.diamond_size_for_text(&block.condition);
 
-        // Top diamond
-        let diamond_y = y + dsz;
-        self.draw_diamond_sized(center_x, diamond_y, dsz);
-        self.draw_text_near(center_x, diamond_y, &block.condition);
+        // Condition hexagon
+        let cy = y + HEX_HALF_H;
+        self.draw_condition_hexagon(center_x, cy, &block.condition);
+        let hex_half_w = self.hex_width(&block.condition) / 2.0;
+        let hex_left = center_x - hex_half_w;
+        let hex_right = center_x + hex_half_w;
 
-        let branch_top_y = y + dsz * 2.0 + ARROW_SPACING;
+        let branch_top = y + HEX_HALF_H * 2.0 + BRANCH_TOP_GAP;
 
-        // Then branch (left) — center at gap/2 + half-width left of diamond
-        let then_center_x = center_x - BRANCH_GAP / 2.0 - then_box.width / 2.0;
-        self.draw_angled_arrow(center_x, y + dsz * 2.0, then_center_x, branch_top_y);
+        // Then branch (left)
+        let then_cx = center_x - BRANCH_GAP / 2.0 - then_box.width / 2.0;
+        self.draw_branch_edge_out(hex_left, cy, then_cx, branch_top);
         if !block.then_label.is_empty() {
-            self.primitives.push(Primitive::Text(Text {
-                x: center_x - dsz - 3.0,
-                y: y + dsz * 2.0 + 12.0,
-                content: block.then_label.clone(),
-                font_size: self.theme.font_size() - 1.0,
-                font_family: self.theme.font_family().to_string(),
-                fill: "#666666".into(),
-                anchor: TextAnchor::End,
-            }));
+            self.draw_side_label(hex_left, cy, &block.then_label, TextAnchor::End);
         }
-        let then_end_y = self.draw_elements(&block.then_elements, then_center_x, branch_top_y);
+        let then_end_y = self.draw_elements(&block.then_elements, then_cx, branch_top);
 
-        // Else branch (right) — center at gap/2 + half-width right of diamond
-        let else_center_x = center_x + BRANCH_GAP / 2.0 + else_box.width / 2.0;
-        self.draw_angled_arrow(center_x, y + dsz * 2.0, else_center_x, branch_top_y);
+        // Else branch (right)
+        let else_cx = center_x + BRANCH_GAP / 2.0 + else_box.width / 2.0;
+        self.draw_branch_edge_out(hex_right, cy, else_cx, branch_top);
         if !block.else_label.is_empty() {
-            self.primitives.push(Primitive::Text(Text {
-                x: center_x + dsz + 3.0,
-                y: y + dsz * 2.0 + 12.0,
-                content: block.else_label.clone(),
-                font_size: self.theme.font_size() - 1.0,
-                font_family: self.theme.font_family().to_string(),
-                fill: "#666666".into(),
-                anchor: TextAnchor::Start,
-            }));
+            self.draw_side_label(hex_right, cy, &block.else_label, TextAnchor::Start);
         }
-        let else_end_y = self.draw_elements(&block.else_elements, else_center_x, branch_top_y);
+        let else_end_y = self.draw_elements(&block.else_elements, else_cx, branch_top);
 
         // Bottom merge diamond (small, no text)
-        let msz = MERGE_DIAMOND_SIZE;
-        let merge_y = y + total_box.height - msz * 2.0;
-        self.draw_diamond_sized(center_x, merge_y + msz, msz);
+        let merge_cy = y + total_box.height - MERGE_HALF;
+        self.draw_merge_diamond(center_x, merge_cy);
 
-        // Arrows from branches to merge
-        self.draw_angled_arrow(then_center_x, then_end_y, center_x, merge_y);
-        self.draw_angled_arrow(else_center_x, else_end_y, center_x, merge_y);
+        // Edges from branches into the merge diamond
+        self.draw_branch_edge_in(then_cx, then_end_y, center_x, merge_cy);
+        self.draw_branch_edge_in(else_cx, else_end_y, center_x, merge_cy);
 
         y + total_box.height
     }
@@ -417,70 +444,60 @@ impl<'a> ActivityLayoutContext<'a> {
     fn draw_while(&mut self, block: &WhileBlock, center_x: f32, y: f32) -> f32 {
         let total_box = self.measure_while(block);
 
-        let dsz = self.diamond_size_for_text(&block.condition);
+        // Condition hexagon
+        let cy = y + HEX_HALF_H;
+        self.draw_condition_hexagon(center_x, cy, &block.condition);
+        let hex_half_w = self.hex_width(&block.condition) / 2.0;
 
-        // Top diamond
-        let diamond_y = y + dsz;
-        self.draw_diamond_sized(center_x, diamond_y, dsz);
-        self.draw_text_near(center_x, diamond_y, &block.condition);
-
-        // "is" label
+        // "is" label (loop-continue side, below the hexagon)
         if !block.is_label.is_empty() {
             self.primitives.push(Primitive::Text(Text {
-                x: center_x + dsz + 5.0,
-                y: diamond_y - 5.0,
+                x: center_x + 5.0,
+                y: cy + HEX_HALF_H + 12.0,
                 content: block.is_label.clone(),
-                font_size: self.theme.font_size() - 1.0,
-                font_family: self.theme.font_family().to_string(),
-                fill: "#666666".into(),
+                font_size: LABEL_FONT_SIZE,
+                font_family: FONT_FAMILY.into(),
+                fill: TEXT_COLOR.into(),
                 anchor: TextAnchor::Start,
+                bold: false,
             }));
         }
 
         // Body
-        let body_y = y + dsz * 2.0 + ARROW_SPACING;
-        self.draw_down_arrow(center_x, y + dsz * 2.0, body_y, None);
+        let body_y = y + HEX_HALF_H * 2.0 + ARROW_SPACING;
+        self.draw_down_arrow(center_x, y + HEX_HALF_H * 2.0, body_y, None);
         let body_end_y = self.draw_elements(&block.elements, center_x, body_y);
 
         // Loop-back arrow (left side)
         let loop_x = center_x - total_box.width / 2.0 - 10.0;
-        let loop_top_y = y + dsz;
         self.primitives.push(Primitive::Path(Path {
             d: format!(
                 "M {},{} L {},{} L {},{} L {},{}",
-                center_x, body_end_y,
-                loop_x, body_end_y,
-                loop_x, loop_top_y,
-                center_x - dsz, loop_top_y,
+                center_x,
+                body_end_y,
+                loop_x,
+                body_end_y,
+                loop_x,
+                cy,
+                center_x - hex_half_w,
+                cy,
             ),
             fill: "none".into(),
-            stroke: self.theme.arrow_color().to_string(),
+            stroke: EDGE_COLOR.into(),
             stroke_width: 1.0,
             dashed: false,
         }));
-        // Arrowhead pointing right
+        // Arrowhead pointing right into the hexagon's left vertex
         self.primitives.push(Primitive::Polygon(Polygon {
-            points: vec![
-                (center_x - dsz, loop_top_y),
-                (center_x - dsz - 6.0, loop_top_y - 3.0),
-                (center_x - dsz - 6.0, loop_top_y + 3.0),
-            ],
-            fill: self.theme.arrow_color().to_string(),
+            points: concave_head(center_x - hex_half_w, cy, 1.0, 0.0),
+            fill: EDGE_COLOR.into(),
             stroke: "none".into(),
             stroke_width: 0.0,
         }));
 
-        // "end" label
+        // "end" label (loop-exit side)
         if !block.end_label.is_empty() {
-            self.primitives.push(Primitive::Text(Text {
-                x: center_x - dsz - 5.0,
-                y: diamond_y + dsz + 12.0,
-                content: block.end_label.clone(),
-                font_size: self.theme.font_size() - 1.0,
-                font_family: self.theme.font_family().to_string(),
-                fill: "#666666".into(),
-                anchor: TextAnchor::End,
-            }));
+            self.draw_side_label(center_x - hex_half_w, cy, &block.end_label, TextAnchor::End);
         }
 
         y + total_box.height
@@ -503,11 +520,11 @@ impl<'a> ActivityLayoutContext<'a> {
             y,
             width: total_branches_width + FORK_BAR_EXTEND * 2.0,
             height: FORK_BAR_HEIGHT,
-            fill: "#333333".into(),
+            fill: START_STOP_COLOR.into(),
             stroke: "none".into(),
             stroke_width: 0.0,
-            rx: 0.0,
-            ry: 0.0,
+            rx: 2.5,
+            ry: 2.5,
         }));
 
         let branch_top_y = y + FORK_BAR_HEIGHT + ARROW_SPACING;
@@ -531,11 +548,11 @@ impl<'a> ActivityLayoutContext<'a> {
             y: bottom_bar_y,
             width: total_branches_width + FORK_BAR_EXTEND * 2.0,
             height: FORK_BAR_HEIGHT,
-            fill: "#333333".into(),
+            fill: START_STOP_COLOR.into(),
             stroke: "none".into(),
             stroke_width: 0.0,
-            rx: 0.0,
-            ry: 0.0,
+            rx: 2.5,
+            ry: 2.5,
         }));
 
         y + total_box.height
@@ -549,47 +566,50 @@ impl<'a> ActivityLayoutContext<'a> {
             .map(|c| self.measure_elements(&c.elements))
             .collect();
 
-        let dsz = self.diamond_size_for_text(&block.condition);
-
-        // Top diamond
-        let diamond_y = y + dsz;
-        self.draw_diamond_sized(center_x, diamond_y, dsz);
-        self.draw_text_near(center_x, diamond_y, &block.condition);
+        // Condition hexagon
+        let cy = y + HEX_HALF_H;
+        self.draw_condition_hexagon(center_x, cy, &block.condition);
+        let hex_half_w = self.hex_width(&block.condition) / 2.0;
 
         let total_cases_width = total_box.width;
         let left_x = center_x - total_cases_width / 2.0;
-        let branch_top_y = y + dsz * 2.0 + ARROW_SPACING;
+        let branch_top_y = y + HEX_HALF_H * 2.0 + BRANCH_TOP_GAP;
+
+        let merge_cy = y + total_box.height - MERGE_HALF;
 
         let mut cx = left_x;
         for (case, cbox) in block.cases.iter().zip(&case_boxes) {
             let case_w = cbox.width.max(60.0);
             let case_cx = cx + case_w / 2.0;
 
-            self.draw_angled_arrow(center_x, y + dsz * 2.0, case_cx, branch_top_y);
+            let exit_x = if case_cx < center_x {
+                center_x - hex_half_w
+            } else {
+                center_x + hex_half_w
+            };
+            self.draw_branch_edge_out(exit_x, cy, case_cx, branch_top_y);
 
             if !case.label.is_empty() {
                 self.primitives.push(Primitive::Text(Text {
                     x: case_cx,
                     y: branch_top_y - 5.0,
                     content: case.label.clone(),
-                    font_size: self.theme.font_size() - 1.0,
-                    font_family: self.theme.font_family().to_string(),
-                    fill: "#666666".into(),
+                    font_size: LABEL_FONT_SIZE,
+                    font_family: FONT_FAMILY.into(),
+                    fill: TEXT_COLOR.into(),
                     anchor: TextAnchor::Middle,
+                    bold: false,
                 }));
             }
 
             let end_y = self.draw_elements(&case.elements, case_cx, branch_top_y);
-
-            let merge_y = y + total_box.height - MERGE_DIAMOND_SIZE * 2.0;
-            self.draw_angled_arrow(case_cx, end_y, center_x, merge_y);
+            self.draw_branch_edge_in(case_cx, end_y, center_x, merge_cy);
 
             cx += case_w + BRANCH_GAP;
         }
 
         // Bottom merge diamond (small)
-        let merge_y = y + total_box.height - MERGE_DIAMOND_SIZE;
-        self.draw_diamond_sized(center_x, merge_y, MERGE_DIAMOND_SIZE);
+        self.draw_merge_diamond(center_x, merge_cy);
 
         y + total_box.height
     }
@@ -608,7 +628,7 @@ impl<'a> ActivityLayoutContext<'a> {
             width: w,
             height: h,
             fill: "none".into(),
-            stroke: "#333333".into(),
+            stroke: SHAPE_STROKE.into(),
             stroke_width: 1.0,
             rx: 0.0,
             ry: 0.0,
@@ -619,10 +639,11 @@ impl<'a> ActivityLayoutContext<'a> {
             x: center_x,
             y: y + label_h * 0.8,
             content: partition.name.clone(),
-            font_size: self.theme.font_size(),
-            font_family: self.theme.font_family().to_string(),
-            fill: "#333333".into(),
+            font_size: FONT_SIZE,
+            font_family: FONT_FAMILY.into(),
+            fill: TEXT_COLOR.into(),
             anchor: TextAnchor::Middle,
+            bold: true,
         }));
 
         let inner_y = y + label_h + PARTITION_PADDING;
@@ -647,9 +668,9 @@ impl<'a> ActivityLayoutContext<'a> {
             y,
             width: w,
             height: h,
-            fill: self.theme.note_bg_color().to_string(),
-            stroke: self.theme.note_border_color().to_string(),
-            stroke_width: 1.0,
+            fill: NOTE_FILL.into(),
+            stroke: SHAPE_STROKE.into(),
+            stroke_width: SHAPE_STROKE_W,
             rx: 0.0,
             ry: 0.0,
         }));
@@ -658,10 +679,11 @@ impl<'a> ActivityLayoutContext<'a> {
             x: x + NOTE_PADDING,
             y: y + NOTE_PADDING + self.measurer.line_height() * 0.7,
             content: note.text.clone(),
-            font_size: self.theme.font_size(),
-            font_family: self.theme.font_family().to_string(),
-            fill: "black".into(),
+            font_size: FONT_SIZE,
+            font_family: FONT_FAMILY.into(),
+            fill: TEXT_COLOR.into(),
             anchor: TextAnchor::Start,
+            bold: false,
         }));
     }
 
@@ -669,87 +691,90 @@ impl<'a> ActivityLayoutContext<'a> {
 
     fn draw_filled_circle(&mut self, cx: f32, cy: f32, r: f32) {
         self.primitives.push(Primitive::Path(Path {
-            d: format!(
-                "M {},{} a {},{} 0 1,0 {},0 a {},{} 0 1,0 {},0",
-                cx - r, cy, r, r, r * 2.0, r, r, -(r * 2.0),
-            ),
-            fill: "#333333".into(),
+            d: circle_path(cx, cy, r),
+            fill: START_STOP_COLOR.into(),
             stroke: "none".into(),
             stroke_width: 0.0,
             dashed: false,
         }));
     }
 
-    fn draw_stop_circle(&mut self, cx: f32, cy: f32, r: f32) {
+    fn draw_stop_circle(&mut self, cx: f32, cy: f32) {
         // Outer circle
         self.primitives.push(Primitive::Path(Path {
-            d: format!(
-                "M {},{} a {},{} 0 1,0 {},0 a {},{} 0 1,0 {},0",
-                cx - r, cy, r, r, r * 2.0, r, r, -(r * 2.0),
-            ),
+            d: circle_path(cx, cy, STOP_OUTER_RADIUS),
             fill: "none".into(),
-            stroke: "#333333".into(),
-            stroke_width: 2.0,
+            stroke: START_STOP_COLOR.into(),
+            stroke_width: 1.0,
             dashed: false,
         }));
         // Inner filled circle
-        let ir = r * 0.6;
         self.primitives.push(Primitive::Path(Path {
-            d: format!(
-                "M {},{} a {},{} 0 1,0 {},0 a {},{} 0 1,0 {},0",
-                cx - ir, cy, ir, ir, ir * 2.0, ir, ir, -(ir * 2.0),
-            ),
-            fill: "#333333".into(),
+            d: circle_path(cx, cy, STOP_INNER_RADIUS),
+            fill: START_STOP_COLOR.into(),
             stroke: "none".into(),
             stroke_width: 0.0,
             dashed: false,
         }));
     }
 
-    #[allow(dead_code)]
-    fn draw_diamond(&mut self, cx: f32, cy: f32) {
-        self.draw_diamond_sized(cx, cy, DIAMOND_SIZE);
-    }
-
-    fn draw_diamond_sized(&mut self, cx: f32, cy: f32, d: f32) {
+    /// Condition hexagon centered at (cx, cy) with the condition text inside.
+    fn draw_condition_hexagon(&mut self, cx: f32, cy: f32, text: &str) {
+        let half_w = self.label_measurer.measure_width(text) / 2.0;
         self.primitives.push(Primitive::Polygon(Polygon {
             points: vec![
-                (cx, cy - d),
-                (cx + d, cy),
-                (cx, cy + d),
-                (cx - d, cy),
+                (cx - half_w, cy - HEX_HALF_H),
+                (cx + half_w, cy - HEX_HALF_H),
+                (cx + half_w + HEX_EXTEND, cy),
+                (cx + half_w, cy + HEX_HALF_H),
+                (cx - half_w, cy + HEX_HALF_H),
+                (cx - half_w - HEX_EXTEND, cy),
             ],
-            fill: "#FEFECE".into(),
-            stroke: "#A80036".into(),
-            stroke_width: 1.5,
+            fill: SHAPE_FILL.into(),
+            stroke: SHAPE_STROKE.into(),
+            stroke_width: SHAPE_STROKE_W,
+        }));
+
+        if !text.is_empty() {
+            self.primitives.push(Primitive::Text(Text {
+                x: cx,
+                y: cy + LABEL_FONT_SIZE * 0.38,
+                content: text.to_string(),
+                font_size: LABEL_FONT_SIZE,
+                font_family: FONT_FAMILY.into(),
+                fill: TEXT_COLOR.into(),
+                anchor: TextAnchor::Middle,
+                bold: false,
+            }));
+        }
+    }
+
+    /// Small merge diamond centered at (cx, cy).
+    fn draw_merge_diamond(&mut self, cx: f32, cy: f32) {
+        self.primitives.push(Primitive::Polygon(Polygon {
+            points: vec![
+                (cx, cy - MERGE_HALF),
+                (cx + MERGE_HALF, cy),
+                (cx, cy + MERGE_HALF),
+                (cx - MERGE_HALF, cy),
+            ],
+            fill: SHAPE_FILL.into(),
+            stroke: SHAPE_STROKE.into(),
+            stroke_width: SHAPE_STROKE_W,
         }));
     }
 
-    /// Calculate diamond size needed to fit the condition text inside.
-    /// Diamond size for condition text. Compact like Java PlantUML —
-    /// the diamond is a visual marker, text is rendered centered on it
-    /// but may extend beyond the diamond edges.
-    fn diamond_size_for_text(&self, text: &str) -> f32 {
-        if text.is_empty() {
-            return MERGE_DIAMOND_SIZE;
-        }
-        let text_w = self.measurer.measure_width(text);
-        // Compact: diamond is about 40% of text width, clamped
-        (text_w * 0.4 + 4.0).clamp(MIN_DIAMOND_SIZE, 30.0)
-    }
-
-    fn draw_text_near(&mut self, cx: f32, cy: f32, text: &str) {
-        if text.is_empty() {
-            return;
-        }
+    /// yes/no label placed beside a hexagon side vertex, just above the branch edge.
+    fn draw_side_label(&mut self, vertex_x: f32, cy: f32, text: &str, anchor: TextAnchor) {
         self.primitives.push(Primitive::Text(Text {
-            x: cx,
-            y: cy + self.measurer.line_height() * 0.3,
+            x: vertex_x,
+            y: cy - 2.3,
             content: text.to_string(),
-            font_size: self.theme.font_size() - 1.0,
-            font_family: self.theme.font_family().to_string(),
-            fill: "#333333".into(),
-            anchor: TextAnchor::Middle,
+            font_size: LABEL_FONT_SIZE,
+            font_family: FONT_FAMILY.into(),
+            fill: TEXT_COLOR.into(),
+            anchor,
+            bold: false,
         }));
     }
 
@@ -759,7 +784,7 @@ impl<'a> ActivityLayoutContext<'a> {
             y1,
             x2: x,
             y2,
-            stroke: self.theme.arrow_color().to_string(),
+            stroke: EDGE_COLOR.into(),
             stroke_width: 1.0,
             head: ArrowHeadStyle::Filled,
             dashed: false,
@@ -770,39 +795,65 @@ impl<'a> ActivityLayoutContext<'a> {
                 x: x + 5.0,
                 y: (y1 + y2) / 2.0 + 4.0,
                 content: text.to_string(),
-                font_size: self.theme.font_size() - 1.0,
-                font_family: self.theme.font_family().to_string(),
-                fill: "#666666".into(),
+                font_size: LABEL_FONT_SIZE,
+                font_family: FONT_FAMILY.into(),
+                fill: TEXT_COLOR.into(),
                 anchor: TextAnchor::Start,
+                bold: false,
             }));
         }
     }
 
-    fn draw_angled_arrow(&mut self, x1: f32, y1: f32, x2: f32, y2: f32) {
-        // Draw an L-shaped or straight arrow
-        if (x1 - x2).abs() < 1.0 {
+    /// Edge leaving a condition hexagon: horizontal from the side vertex
+    /// (x1, y1), then vertical down into the branch top at (x2, y2).
+    fn draw_branch_edge_out(&mut self, x1: f32, y1: f32, x2: f32, y2: f32) {
+        if (x1 - x2).abs() < 0.5 {
             self.draw_down_arrow(x1, y1, y2, None);
-        } else {
-            // L-shape: go horizontal then vertical
-            self.primitives.push(Primitive::Path(Path {
-                d: format!("M {},{} L {},{} L {},{}", x1, y1, x2, y1, x2, y2),
-                fill: "none".into(),
-                stroke: self.theme.arrow_color().to_string(),
-                stroke_width: 1.0,
-                dashed: false,
-            }));
-            // Arrowhead
-            self.primitives.push(Primitive::Polygon(Polygon {
-                points: vec![
-                    (x2, y2),
-                    (x2 - 4.0, y2 - 8.0),
-                    (x2 + 4.0, y2 - 8.0),
-                ],
-                fill: self.theme.arrow_color().to_string(),
-                stroke: "none".into(),
-                stroke_width: 0.0,
-            }));
+            return;
         }
+        self.primitives.push(Primitive::Path(Path {
+            d: format!("M {},{} L {},{} L {},{}", x1, y1, x2, y1, x2, y2),
+            fill: "none".into(),
+            stroke: EDGE_COLOR.into(),
+            stroke_width: 1.0,
+            dashed: false,
+        }));
+        self.primitives.push(Primitive::Polygon(Polygon {
+            points: concave_head(x2, y2, 0.0, 1.0),
+            fill: EDGE_COLOR.into(),
+            stroke: "none".into(),
+            stroke_width: 0.0,
+        }));
+    }
+
+    /// Edge entering a merge diamond: vertical from the branch bottom (x1, y1)
+    /// down to the diamond's center line, then horizontal into its side vertex.
+    fn draw_branch_edge_in(&mut self, x1: f32, y1: f32, merge_cx: f32, merge_cy: f32) {
+        if (x1 - merge_cx).abs() < 0.5 {
+            self.draw_down_arrow(x1, y1, merge_cy - MERGE_HALF, None);
+            return;
+        }
+        let (target_x, dir) = if x1 < merge_cx {
+            (merge_cx - MERGE_HALF, 1.0)
+        } else {
+            (merge_cx + MERGE_HALF, -1.0)
+        };
+        self.primitives.push(Primitive::Path(Path {
+            d: format!(
+                "M {},{} L {},{} L {},{}",
+                x1, y1, x1, merge_cy, target_x, merge_cy
+            ),
+            fill: "none".into(),
+            stroke: EDGE_COLOR.into(),
+            stroke_width: 1.0,
+            dashed: false,
+        }));
+        self.primitives.push(Primitive::Polygon(Polygon {
+            points: concave_head(target_x, merge_cy, dir, 0.0),
+            fill: EDGE_COLOR.into(),
+            stroke: "none".into(),
+            stroke_width: 0.0,
+        }));
     }
 
     fn draw_detach(&mut self, cx: f32, y: f32) {
@@ -811,9 +862,10 @@ impl<'a> ActivityLayoutContext<'a> {
             y: y + 14.0,
             content: "X".to_string(),
             font_size: 16.0,
-            font_family: self.theme.font_family().to_string(),
-            fill: "#A80036".into(),
+            font_family: FONT_FAMILY.into(),
+            fill: EDGE_COLOR.into(),
             anchor: TextAnchor::Middle,
+            bold: false,
         }));
     }
 
@@ -867,19 +919,61 @@ impl<'a> ActivityLayoutContext<'a> {
             match prim {
                 Primitive::Rect(r) => r.x += dx,
                 Primitive::Text(t) => t.x += dx,
-                Primitive::Arrow(a) => { a.x1 += dx; a.x2 += dx; }
+                Primitive::Arrow(a) => {
+                    a.x1 += dx;
+                    a.x2 += dx;
+                }
                 Primitive::Polygon(p) => {
-                    for pt in &mut p.points { pt.0 += dx; }
+                    for pt in &mut p.points {
+                        pt.0 += dx;
+                    }
                 }
                 Primitive::Path(p) => {
                     // Shift path by rewriting M/L coordinates
                     p.d = shift_path_d(&p.d, dx);
                 }
-                Primitive::Line(l) => { l.x1 += dx; l.x2 += dx; }
-                Primitive::DashedLine(dl) => { dl.x1 += dx; dl.x2 += dx; }
+                Primitive::Line(l) => {
+                    l.x1 += dx;
+                    l.x2 += dx;
+                }
+                Primitive::DashedLine(dl) => {
+                    dl.x1 += dx;
+                    dl.x2 += dx;
+                }
             }
         }
     }
+}
+
+/// Circle as an SVG path (two arcs).
+fn circle_path(cx: f32, cy: f32, r: f32) -> String {
+    format!(
+        "M {},{} a {},{} 0 1,0 {},0 a {},{} 0 1,0 {},0",
+        cx - r,
+        cy,
+        r,
+        r,
+        r * 2.0,
+        r,
+        r,
+        -(r * 2.0),
+    )
+}
+
+/// PlantUML-style concave arrowhead: tip at (tip_x, tip_y), pointing along the
+/// unit vector (ux, uy). Length 10, half-width 4, notch 6 back from the tip.
+fn concave_head(tip_x: f32, tip_y: f32, ux: f32, uy: f32) -> Vec<(f32, f32)> {
+    let base_x = tip_x - ux * 10.0;
+    let base_y = tip_y - uy * 10.0;
+    // Perpendicular
+    let px = -uy;
+    let py = ux;
+    vec![
+        (base_x + px * 4.0, base_y + py * 4.0),
+        (tip_x, tip_y),
+        (base_x - px * 4.0, base_y - py * 4.0),
+        (tip_x - ux * 6.0, tip_y - uy * 6.0),
+    ]
 }
 
 fn shift_path_d(d: &str, dx: f32) -> String {
@@ -895,7 +989,9 @@ fn shift_path_d(d: &str, dx: f32) -> String {
                 result.push(' ');
                 chars.next();
             }
-            if ch == 'Z' { continue; }
+            if ch == 'Z' {
+                continue;
+            }
             // Read x number
             let mut num_str = String::new();
             while let Some(&c) = chars.peek() {
@@ -945,7 +1041,7 @@ mod tests {
     fn test_activity_has_start_circle() {
         let laid_out = layout_from_text("start\n:Hello;\nstop");
         let has_filled_circle = laid_out.primitives.iter().any(|p| {
-            matches!(p, Primitive::Path(path) if path.fill == "#333333" && path.d.contains('a'))
+            matches!(p, Primitive::Path(path) if path.fill == START_STOP_COLOR && path.d.contains('a'))
         });
         assert!(has_filled_circle, "expected start circle");
     }
@@ -953,42 +1049,56 @@ mod tests {
     #[test]
     fn test_activity_has_action_rect() {
         let laid_out = layout_from_text("start\n:Hello;\nstop");
-        let has_rounded_rect = laid_out.primitives.iter().any(|p| {
-            matches!(p, Primitive::Rect(r) if r.rx > 0.0 && r.fill == "#FEFECE")
-        });
+        let has_rounded_rect = laid_out
+            .primitives
+            .iter()
+            .any(|p| matches!(p, Primitive::Rect(r) if r.rx > 0.0 && r.fill == SHAPE_FILL));
         assert!(has_rounded_rect, "expected rounded action rect");
     }
 
     #[test]
+    fn test_action_rect_uses_plantuml_radius() {
+        let laid_out = layout_from_text("start\n:Hello;\nstop");
+        let has_radius = laid_out
+            .primitives
+            .iter()
+            .any(|p| matches!(p, Primitive::Rect(r) if (r.rx - 12.5).abs() < 0.01));
+        assert!(has_radius, "expected action rect with rx=12.5");
+    }
+
+    #[test]
     fn test_activity_with_if() {
-        let laid_out = layout_from_text(
-            "start\nif (ok?) then (yes)\n:A;\nelse (no)\n:B;\nendif\nstop",
-        );
-        // Should have diamonds for if/merge
-        let diamond_count = laid_out.primitives.iter().filter(|p| {
-            matches!(p, Primitive::Polygon(poly) if poly.points.len() == 4 && poly.fill == "#FEFECE")
+        let laid_out =
+            layout_from_text("start\nif (ok?) then (yes)\n:A;\nelse (no)\n:B;\nendif\nstop");
+        // Condition hexagon (6 points) and merge diamond (4 points)
+        let hexagon_count = laid_out.primitives.iter().filter(|p| {
+            matches!(p, Primitive::Polygon(poly) if poly.points.len() == 6 && poly.fill == SHAPE_FILL)
         }).count();
-        assert!(diamond_count >= 2, "expected at least 2 diamonds, got {}", diamond_count);
+        let diamond_count = laid_out.primitives.iter().filter(|p| {
+            matches!(p, Primitive::Polygon(poly) if poly.points.len() == 4 && poly.fill == SHAPE_FILL)
+        }).count();
+        assert_eq!(hexagon_count, 1, "expected 1 condition hexagon");
+        assert_eq!(diamond_count, 1, "expected 1 merge diamond");
     }
 
     #[test]
     fn test_activity_with_while() {
-        let laid_out = layout_from_text(
-            "start\nwhile (running?) is (yes)\n:process;\nendwhile (done)\nstop",
-        );
+        let laid_out =
+            layout_from_text("start\nwhile (running?) is (yes)\n:process;\nendwhile (done)\nstop");
         assert!(laid_out.width > 0.0);
         assert!(laid_out.height > 0.0);
     }
 
     #[test]
     fn test_activity_with_fork() {
-        let laid_out = layout_from_text(
-            "start\nfork\n:task1;\nfork again\n:task2;\nend fork\nstop",
-        );
+        let laid_out =
+            layout_from_text("start\nfork\n:task1;\nfork again\n:task2;\nend fork\nstop");
         // Fork bars should be dark rects
-        let bar_count = laid_out.primitives.iter().filter(|p| {
-            matches!(p, Primitive::Rect(r) if r.fill == "#333333")
-        }).count();
+        let bar_count = laid_out
+            .primitives
+            .iter()
+            .filter(|p| matches!(p, Primitive::Rect(r) if r.fill == START_STOP_COLOR))
+            .count();
         assert_eq!(bar_count, 2, "expected 2 fork bars");
     }
 

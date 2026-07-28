@@ -4,29 +4,35 @@ use crate::render::primitives::*;
 use crate::render::svg::LaidOutDiagram;
 use crate::theme::{DefaultTheme, Theme};
 
-// Layout constants
-const PADDING: f32 = 10.0;
-const PARTICIPANT_PADDING_H: f32 = 16.0;
-const PARTICIPANT_PADDING_V: f32 = 10.0;
+// Layout constants (matched against PlantUML 1.2026 default output, see SPEC.md)
+const PADDING: f32 = 17.0;
+const PARTICIPANT_PADDING_H: f32 = 7.0;
+const PARTICIPANT_PADDING_V: f32 = 7.0;
 const PARTICIPANT_MARGIN: f32 = 30.0;
-const MESSAGE_SPACING: f32 = 40.0;
-const NOTE_PADDING: f32 = 8.0;
-const NOTE_MARGIN: f32 = 10.0;
+/// Vertical distance between consecutive message lines.
+const MESSAGE_SPACING: f32 = 30.0;
+const NOTE_PADDING: f32 = 5.0;
+const NOTE_MARGIN: f32 = 5.0;
+const NOTE_FOLD: f32 = 10.0;
 const GROUP_PADDING: f32 = 8.0;
-const GROUP_LABEL_HEIGHT: f32 = 20.0;
-// Reserved for future activation bar rendering
-// const ACTIVATION_WIDTH: f32 = 10.0;
+const GROUP_LABEL_HEIGHT: f32 = 17.5;
+const GROUP_TOP_MARGIN: f32 = 15.0;
+const ACTIVATION_HALF_W: f32 = 5.0;
+// Database cylinder (participant head/tail icon)
+const DB_CYL_W: f32 = 36.0;
+const DB_CYL_H: f32 = 46.0;
+const DB_CYL_CAP: f32 = 10.0;
 const SELF_MSG_WIDTH: f32 = 40.0;
 const SELF_MSG_HEIGHT: f32 = 30.0;
-const SEPARATOR_MARGIN: f32 = 10.0;
-const DIAGRAM_MARGIN: f32 = 20.0;
+const DIAGRAM_MARGIN: f32 = 10.0;
 const TITLE_MARGIN: f32 = 10.0;
 
 /// Layout a parsed sequence diagram into primitives with computed positions.
 pub fn layout(diagram: &SequenceDiagram) -> LaidOutDiagram {
     let theme = DefaultTheme;
     let measurer = TextMeasurer::new(theme.font_size());
-    let title_measurer = TextMeasurer::new(theme.participant_font_size() + 2.0);
+    // Used for both the title and participant labels (both 14px).
+    let title_measurer = TextMeasurer::new(theme.participant_font_size());
 
     let mut ctx = LayoutContext::new(&theme, &measurer, &title_measurer);
     ctx.layout(diagram)
@@ -55,7 +61,10 @@ struct LayoutContext<'a> {
     fg_primitives: Vec<Primitive>,
     y_cursor: f32,
     auto_number: Option<u32>,
-    active_participants: Vec<String>,
+    /// Currently open activations: (participant name, start y).
+    active_participants: Vec<(String, f32)>,
+    /// Finished activations: (participant name, start y, end y).
+    finished_activations: Vec<(String, f32, f32)>,
 }
 
 impl<'a> LayoutContext<'a> {
@@ -75,6 +84,7 @@ impl<'a> LayoutContext<'a> {
             y_cursor: DIAGRAM_MARGIN,
             auto_number: None,
             active_participants: Vec::new(),
+            finished_activations: Vec::new(),
         }
     }
 
@@ -82,18 +92,20 @@ impl<'a> LayoutContext<'a> {
         // Collect all participants (declared + implicit from messages)
         self.collect_participants(diagram);
 
-        // Position participants horizontally
-        self.position_participants();
+        // Position participants horizontally, spacing them out enough for
+        // message labels between each pair.
+        let constraints = self.gather_spacing_constraints(&diagram.elements);
+        self.position_participants(&constraints);
 
         // Draw title if present
         if let Some(title) = &diagram.title {
             self.draw_title(title);
         }
 
-        // Draw participant boxes (top)
+        // Draw participant heads (top row); lifelines start at its bottom edge
         let participant_top_y = self.y_cursor;
-        self.draw_participant_boxes(participant_top_y);
-        self.y_cursor += self.participant_box_height() + PADDING;
+        self.draw_participant_boxes(participant_top_y, false);
+        self.y_cursor += self.head_row_height();
 
         let lifeline_start_y = self.y_cursor;
 
@@ -102,13 +114,39 @@ impl<'a> LayoutContext<'a> {
 
         self.y_cursor += PADDING;
 
-        // Draw participant boxes (bottom)
+        // Draw participant tails (bottom row)
         let bottom_box_y = self.y_cursor;
-        self.draw_participant_boxes(bottom_box_y);
-        self.y_cursor += self.participant_box_height() + DIAGRAM_MARGIN;
+        self.draw_participant_boxes(bottom_box_y, true);
+        self.y_cursor += self.head_row_height() + DIAGRAM_MARGIN;
 
         // Draw lifelines (from bottom of top box to top of bottom box)
         self.draw_lifelines(lifeline_start_y, bottom_box_y);
+
+        // Close any activations left open, then draw all activation bars
+        // (above the lifelines, below messages).
+        let open: Vec<(String, f32)> = std::mem::take(&mut self.active_participants);
+        for (name, start_y) in open {
+            self.finished_activations
+                .push((name, start_y, bottom_box_y));
+        }
+        let bars: Vec<(f32, f32, f32)> = self
+            .finished_activations
+            .iter()
+            .map(|(name, start, end)| (self.participant_x(name), *start, *end))
+            .collect();
+        for (x, start, end) in bars {
+            self.group_primitives.push(Primitive::Rect(Rect {
+                x: x - ACTIVATION_HALF_W,
+                y: start,
+                width: ACTIVATION_HALF_W * 2.0,
+                height: end - start,
+                fill: self.theme.activation_bg_color().to_string(),
+                stroke: self.theme.activation_border_color().to_string(),
+                stroke_width: 1.0,
+                rx: 0.0,
+                ry: 0.0,
+            }));
+        }
 
         // Calculate total dimensions
         let total_width = self.calculate_total_width();
@@ -133,7 +171,11 @@ impl<'a> LayoutContext<'a> {
             if let SequenceElement::ParticipantDecl(p) = element {
                 if !self.participants.iter().any(|pi| pi.name == p.name) {
                     let label = p.label.clone().unwrap_or_else(|| p.name.clone());
-                    let box_width = self.measurer.measure_width(&label) + PARTICIPANT_PADDING_H * 2.0;
+                    let box_width = if p.kind == ParticipantKind::Database {
+                        self.title_measurer.measure_width(&label).max(DB_CYL_W)
+                    } else {
+                        self.title_measurer.measure_width(&label) + PARTICIPANT_PADDING_H * 2.0
+                    };
                     self.participants.push(ParticipantInfo {
                         name: p.name.clone(),
                         label,
@@ -156,8 +198,8 @@ impl<'a> LayoutContext<'a> {
                 SequenceElement::Message(msg) => {
                     for name in [&msg.from, &msg.to] {
                         if !self.participants.iter().any(|pi| pi.name == *name) {
-                            let box_width =
-                                self.measurer.measure_width(name) + PARTICIPANT_PADDING_H * 2.0;
+                            let box_width = self.title_measurer.measure_width(name)
+                                + PARTICIPANT_PADDING_H * 2.0;
                             self.participants.push(ParticipantInfo {
                                 name: name.clone(),
                                 label: name.clone(),
@@ -180,19 +222,84 @@ impl<'a> LayoutContext<'a> {
         }
     }
 
-    fn position_participants(&mut self) {
-        let box_height = self.participant_box_height();
-        let mut x = DIAGRAM_MARGIN;
+    /// Minimum center-to-center distances required between participant pairs
+    /// so that message labels fit: (left index, right index, min distance).
+    fn gather_spacing_constraints(&self, elements: &[SequenceElement]) -> Vec<(usize, usize, f32)> {
+        let mut constraints = Vec::new();
+        self.gather_spacing_constraints_into(elements, &mut constraints);
+        constraints
+    }
 
-        for p in &mut self.participants {
+    fn gather_spacing_constraints_into(
+        &self,
+        elements: &[SequenceElement],
+        constraints: &mut Vec<(usize, usize, f32)>,
+    ) {
+        let index_of = |name: &str| self.participants.iter().position(|p| p.name == name);
+        for element in elements {
+            match element {
+                SequenceElement::Message(msg) if !msg.is_self_referencing => {
+                    if let (Some(i), Some(j)) = (index_of(&msg.from), index_of(&msg.to)) {
+                        let (a, b) = if i < j { (i, j) } else { (j, i) };
+                        let dist = self.measurer.measure_width(&msg.label) + 25.0;
+                        constraints.push((a, b, dist));
+                    }
+                }
+                SequenceElement::Group(group) => {
+                    self.gather_spacing_constraints_into(&group.elements, constraints);
+                    for else_block in &group.else_blocks {
+                        self.gather_spacing_constraints_into(&else_block.elements, constraints);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn position_participants(&mut self, constraints: &[(usize, usize, f32)]) {
+        let box_height = self.participant_box_height();
+        let n = self.participants.len();
+        let mut centers = vec![0.0f32; n];
+
+        for i in 0..n {
+            let w = self.participants[i].box_width;
+            let mut x = if i == 0 {
+                DIAGRAM_MARGIN + w / 2.0
+            } else {
+                let prev_w = self.participants[i - 1].box_width;
+                centers[i - 1] + prev_w / 2.0 + PARTICIPANT_MARGIN + w / 2.0
+            };
+            for &(a, b, dist) in constraints {
+                if b == i {
+                    x = x.max(centers[a] + dist);
+                }
+            }
+            centers[i] = x;
+        }
+
+        for (p, &x) in self.participants.iter_mut().zip(&centers) {
             p.box_height = box_height;
-            p.x_center = x + p.box_width / 2.0;
-            x += p.box_width + PARTICIPANT_MARGIN;
+            p.x_center = x;
         }
     }
 
     fn participant_box_height(&self) -> f32 {
-        self.measurer.line_height() + PARTICIPANT_PADDING_V * 2.0
+        self.title_measurer.line_height() + PARTICIPANT_PADDING_V * 2.0
+    }
+
+    /// Height of the participant head/tail row. Database cylinders are taller
+    /// than plain boxes; everything is aligned within this row height.
+    fn head_row_height(&self) -> f32 {
+        let box_h = self.participant_box_height();
+        let has_db = self
+            .participants
+            .iter()
+            .any(|p| p.kind == ParticipantKind::Database);
+        if has_db {
+            box_h.max(DB_CYL_H + self.title_measurer.line_height())
+        } else {
+            box_h
+        }
     }
 
     fn participant_x(&self, name: &str) -> f32 {
@@ -207,10 +314,11 @@ impl<'a> LayoutContext<'a> {
         let total_width = self.calculate_total_width();
         let center_x = total_width / 2.0;
         self.fg_primitives.push(Primitive::Text(Text {
+            bold: true,
             x: center_x,
             y: self.y_cursor + self.title_measurer.line_height(),
             content: title.to_string(),
-            font_size: self.theme.participant_font_size() + 2.0,
+            font_size: self.theme.participant_font_size(),
             font_family: self.theme.font_family().to_string(),
             fill: "black".into(),
             anchor: TextAnchor::Middle,
@@ -218,32 +326,69 @@ impl<'a> LayoutContext<'a> {
         self.y_cursor += self.title_measurer.line_height() + TITLE_MARGIN;
     }
 
-    fn draw_participant_boxes(&mut self, y: f32) {
-        for p in &self.participants {
-            // Draw box
-            self.fg_primitives.push(Primitive::Rect(Rect {
-                x: p.x_center - p.box_width / 2.0,
-                y,
-                width: p.box_width,
-                height: p.box_height,
-                fill: self.theme.participant_bg_color().to_string(),
-                stroke: self.theme.participant_border_color().to_string(),
-                stroke_width: 1.5,
-                rx: 0.0,
-                ry: 0.0,
-            }));
+    /// Draw the participant head (top) or tail (bottom) row starting at `y`.
+    /// Heads are bottom-aligned within the row, tails top-aligned, so boxes
+    /// and taller database cylinders sit flush against the lifeline.
+    fn draw_participant_boxes(&mut self, y: f32, bottom: bool) {
+        let row_h = self.head_row_height();
+        let box_h = self.participant_box_height();
+        let label_lh = self.title_measurer.line_height();
 
-            // Draw label
-            self.fg_primitives.push(Primitive::Text(Text {
-                x: p.x_center,
-                y: y + p.box_height / 2.0 + self.measurer.line_height() * 0.3,
-                content: p.label.clone(),
-                font_size: self.theme.participant_font_size(),
-                font_family: self.theme.font_family().to_string(),
-                fill: "black".into(),
-                anchor: TextAnchor::Middle,
-            }));
+        let mut prims = Vec::new();
+        for p in &self.participants {
+            if p.kind == ParticipantKind::Database {
+                let (cyl_top, label_baseline) = if bottom {
+                    (y + label_lh, y + label_lh - 3.0)
+                } else {
+                    (y + row_h - DB_CYL_H - label_lh, y + row_h - 3.0)
+                };
+                prims.push(database_cylinder(
+                    p.x_center,
+                    cyl_top,
+                    self.theme.participant_bg_color(),
+                    self.theme.participant_border_color(),
+                ));
+                prims.push(database_cylinder_lens(
+                    p.x_center,
+                    cyl_top,
+                    self.theme.participant_border_color(),
+                ));
+                prims.push(Primitive::Text(Text {
+                    bold: false,
+                    x: p.x_center,
+                    y: label_baseline,
+                    content: p.label.clone(),
+                    font_size: self.theme.participant_font_size(),
+                    font_family: self.theme.font_family().to_string(),
+                    fill: "black".into(),
+                    anchor: TextAnchor::Middle,
+                }));
+            } else {
+                let box_y = if bottom { y } else { y + row_h - box_h };
+                prims.push(Primitive::Rect(Rect {
+                    x: p.x_center - p.box_width / 2.0,
+                    y: box_y,
+                    width: p.box_width,
+                    height: box_h,
+                    fill: self.theme.participant_bg_color().to_string(),
+                    stroke: self.theme.participant_border_color().to_string(),
+                    stroke_width: 0.5,
+                    rx: 2.5,
+                    ry: 2.5,
+                }));
+                prims.push(Primitive::Text(Text {
+                    bold: false,
+                    x: p.x_center,
+                    y: box_y + box_h / 2.0 + self.title_measurer.line_height() * 0.32,
+                    content: p.label.clone(),
+                    font_size: self.theme.participant_font_size(),
+                    font_family: self.theme.font_family().to_string(),
+                    fill: "black".into(),
+                    anchor: TextAnchor::Middle,
+                }));
+            }
         }
+        self.fg_primitives.append(&mut prims);
     }
 
     fn draw_lifelines(&mut self, start_y: f32, end_y: f32) {
@@ -254,7 +399,7 @@ impl<'a> LayoutContext<'a> {
                 x2: p.x_center,
                 y2: end_y,
                 stroke: self.theme.lifeline_color().to_string(),
-                stroke_width: 1.0,
+                stroke_width: 0.5,
                 dash_array: "5,5".into(),
             }));
         }
@@ -271,11 +416,18 @@ impl<'a> LayoutContext<'a> {
                 SequenceElement::Group(group) => self.layout_group(group),
                 SequenceElement::Separator(sep) => self.layout_separator(sep),
                 SequenceElement::Activate(name) => {
-                    self.active_participants.push(name.clone());
+                    // The bar starts at the message line that activated it,
+                    // which is where the cursor sits right after a message.
+                    self.active_participants.push((name.clone(), self.y_cursor));
                 }
                 SequenceElement::Deactivate(name) => {
-                    if let Some(pos) = self.active_participants.iter().position(|n| n == name) {
-                        self.active_participants.remove(pos);
+                    if let Some(pos) = self
+                        .active_participants
+                        .iter()
+                        .rposition(|(n, _)| n == name)
+                    {
+                        let (n, start_y) = self.active_participants.remove(pos);
+                        self.finished_activations.push((n, start_y, self.y_cursor));
                     }
                 }
                 SequenceElement::AutoNumber(config) => {
@@ -290,7 +442,9 @@ impl<'a> LayoutContext<'a> {
     }
 
     fn layout_message(&mut self, msg: &Message) {
-        let y = self.y_cursor + MESSAGE_SPACING / 2.0;
+        // The message line sits MESSAGE_SPACING below the previous row;
+        // the label is drawn just above the line.
+        let y = self.y_cursor + MESSAGE_SPACING;
 
         let mut label = msg.label.clone();
         if let Some(ref mut num) = self.auto_number {
@@ -304,7 +458,7 @@ impl<'a> LayoutContext<'a> {
             self.layout_normal_message(msg, &label, y);
         }
 
-        self.y_cursor += MESSAGE_SPACING;
+        self.y_cursor = y;
     }
 
     fn layout_normal_message(&mut self, msg: &Message, label: &str, y: f32) {
@@ -329,18 +483,24 @@ impl<'a> LayoutContext<'a> {
             dashed,
         }));
 
-        // Label above the arrow
+        // Label above the arrow, anchored near the arrow's left end
+        // (PlantUML: 7px right of the source going right, 17px right of the
+        // arrowhead going left).
         if !label.is_empty() {
-            let label_x = (from_x + to_x) / 2.0;
-            let label_y = y - 6.0;
+            let (label_x, anchor) = if from_x <= to_x {
+                (from_x + 7.0, TextAnchor::Start)
+            } else {
+                (to_x + 17.0, TextAnchor::Start)
+            };
             self.fg_primitives.push(Primitive::Text(Text {
+                bold: false,
                 x: label_x,
-                y: label_y,
+                y: y - 5.0,
                 content: label.to_string(),
                 font_size: self.theme.font_size(),
                 font_family: self.theme.font_family().to_string(),
                 fill: "black".into(),
-                anchor: TextAnchor::Middle,
+                anchor,
             }));
         }
     }
@@ -410,6 +570,7 @@ impl<'a> LayoutContext<'a> {
         // Label
         if !label.is_empty() {
             self.fg_primitives.push(Primitive::Text(Text {
+                bold: false,
                 x: x + SELF_MSG_WIDTH + 4.0,
                 y: y + SELF_MSG_HEIGHT / 2.0 + 4.0,
                 content: label.to_string(),
@@ -424,9 +585,9 @@ impl<'a> LayoutContext<'a> {
     }
 
     fn layout_note(&mut self, note: &Note) {
-        let note_width = self.measurer.measure_multiline_width(&note.text) + NOTE_PADDING * 2.0;
-        let note_height =
-            self.measurer.measure_multiline_height(&note.text) + NOTE_PADDING * 2.0;
+        let note_width =
+            self.measurer.measure_multiline_width(&note.text) + NOTE_PADDING * 2.0 + NOTE_FOLD;
+        let note_height = self.measurer.measure_multiline_height(&note.text) + NOTE_PADDING * 2.0;
 
         let (x, y) = match &note.position {
             NotePosition::RightOf(name) => {
@@ -442,43 +603,66 @@ impl<'a> LayoutContext<'a> {
                     let px = self.participant_x(&names[0]);
                     (px - note_width / 2.0, self.y_cursor)
                 } else {
-                    let min_x = names.iter().map(|n| self.participant_x(n)).fold(f32::MAX, f32::min);
-                    let max_x = names.iter().map(|n| self.participant_x(n)).fold(f32::MIN, f32::max);
+                    let min_x = names
+                        .iter()
+                        .map(|n| self.participant_x(n))
+                        .fold(f32::MAX, f32::min);
+                    let max_x = names
+                        .iter()
+                        .map(|n| self.participant_x(n))
+                        .fold(f32::MIN, f32::max);
                     let center = (min_x + max_x) / 2.0;
                     (center - note_width / 2.0, self.y_cursor)
                 }
             }
         };
 
-        // Note rectangle
-        self.fg_primitives.push(Primitive::Rect(Rect {
-            x,
-            y,
-            width: note_width,
-            height: note_height,
+        // Note body with a folded top-right corner (PlantUML shape):
+        // outline with the corner cut off, plus the fold triangle.
+        let right = x + note_width;
+        let bottom = y + note_height;
+        self.fg_primitives.push(Primitive::Path(Path {
+            d: format!(
+                "M {},{} L {},{} L {},{} L {},{} L {},{} L {},{}",
+                x,
+                y,
+                x,
+                bottom,
+                right,
+                bottom,
+                right,
+                y + NOTE_FOLD,
+                right - NOTE_FOLD,
+                y,
+                x,
+                y,
+            ),
             fill: self.theme.note_bg_color().to_string(),
             stroke: self.theme.note_border_color().to_string(),
-            stroke_width: 1.0,
-            rx: 0.0,
-            ry: 0.0,
+            stroke_width: 0.5,
+            dashed: false,
         }));
-
-        // Folded corner
-        let fold_size = 7.0;
-        let fx = x + note_width - fold_size;
-        let fy = y;
         self.fg_primitives.push(Primitive::Path(Path {
-            d: format!("M {},{} L {},{} L {},{} Z", fx, fy, fx, fy + fold_size, x + note_width, fy + fold_size),
-            fill: self.theme.note_border_color().to_string(),
-            stroke: "none".into(),
-            stroke_width: 0.0,
+            d: format!(
+                "M {},{} L {},{} L {},{} Z",
+                right - NOTE_FOLD,
+                y,
+                right - NOTE_FOLD,
+                y + NOTE_FOLD,
+                right,
+                y + NOTE_FOLD,
+            ),
+            fill: self.theme.note_bg_color().to_string(),
+            stroke: self.theme.note_border_color().to_string(),
+            stroke_width: 0.5,
             dashed: false,
         }));
 
         // Note text
         self.fg_primitives.push(Primitive::Text(Text {
-            x: x + NOTE_PADDING,
-            y: y + NOTE_PADDING + self.measurer.line_height() * 0.7,
+            bold: false,
+            x: x + NOTE_PADDING + 1.0,
+            y: y + NOTE_PADDING + self.measurer.line_height() * 0.8,
             content: note.text.clone(),
             font_size: self.theme.font_size(),
             font_family: self.theme.font_family().to_string(),
@@ -490,10 +674,12 @@ impl<'a> LayoutContext<'a> {
     }
 
     fn layout_group(&mut self, group: &Group) {
+        self.y_cursor += GROUP_TOP_MARGIN;
         let group_start_y = self.y_cursor;
-        let label = format!("{}{}", group_kind_label(group.kind), if group.label.is_empty() { String::new() } else { format!(" [{}]", group.label) });
 
-        self.y_cursor += GROUP_LABEL_HEIGHT + GROUP_PADDING;
+        // The header tab overlaps the first message row's whitespace,
+        // so only a small padding is added here.
+        self.y_cursor += GROUP_PADDING;
 
         // Layout main elements
         self.layout_elements(&group.elements);
@@ -501,9 +687,9 @@ impl<'a> LayoutContext<'a> {
         // Layout else blocks
         let mut else_divider_ys = Vec::new();
         for else_block in &group.else_blocks {
-            else_divider_ys.push(self.y_cursor);
-            // Space for else label text + padding before content
-            self.y_cursor += GROUP_LABEL_HEIGHT + GROUP_PADDING;
+            let divider_y = self.y_cursor + 10.0;
+            else_divider_ys.push(divider_y);
+            self.y_cursor = divider_y + 10.0;
             self.layout_elements(&else_block.elements);
         }
 
@@ -511,19 +697,32 @@ impl<'a> LayoutContext<'a> {
 
         let group_end_y = self.y_cursor;
 
-        // Calculate group width (span all participants)
-        let min_x = self
+        // The frame spans only the participants involved in the group,
+        // extended by 10px beyond their boxes on each side.
+        let mut involved = std::collections::HashSet::new();
+        collect_group_participants(group, &mut involved);
+        let span: Vec<&ParticipantInfo> = self
             .participants
             .iter()
-            .map(|p| p.x_center - p.box_width / 2.0)
-            .fold(f32::MAX, f32::min)
-            - GROUP_PADDING;
-        let max_x = self
-            .participants
-            .iter()
-            .map(|p| p.x_center + p.box_width / 2.0)
-            .fold(f32::MIN, f32::max)
-            + GROUP_PADDING;
+            .filter(|p| involved.contains(&p.name))
+            .collect();
+        let (min_x, max_x) = if span.is_empty() {
+            (
+                DIAGRAM_MARGIN,
+                self.calculate_total_width() - DIAGRAM_MARGIN,
+            )
+        } else {
+            (
+                span.iter()
+                    .map(|p| p.x_center - p.box_width / 2.0)
+                    .fold(f32::MAX, f32::min)
+                    - 10.0,
+                span.iter()
+                    .map(|p| p.x_center + p.box_width / 2.0)
+                    .fold(f32::MIN, f32::max)
+                    + 10.0,
+            )
+        };
 
         // Group frame
         self.group_primitives.push(Primitive::Rect(Rect {
@@ -533,66 +732,84 @@ impl<'a> LayoutContext<'a> {
             height: group_end_y - group_start_y,
             fill: "none".into(),
             stroke: self.theme.group_border_color().to_string(),
-            stroke_width: 1.0,
+            stroke_width: 1.5,
             rx: 0.0,
             ry: 0.0,
         }));
 
-        // Group label background (pentagon-like tab)
-        let label_width = self.measurer.measure_width(&label) + 20.0;
+        // Header tab: pentagon with a notched bottom-right corner
+        let kind = group_kind_label(group.kind);
+        let tab_width = self.measurer.measure_width(kind) + 30.0;
         let tab_height = GROUP_LABEL_HEIGHT;
         self.group_primitives.push(Primitive::Polygon(Polygon {
             points: vec![
                 (min_x, group_start_y),
-                (min_x + label_width, group_start_y),
-                (min_x + label_width, group_start_y + tab_height - 5.0),
-                (min_x + label_width - 5.0, group_start_y + tab_height),
+                (min_x + tab_width, group_start_y),
+                (min_x + tab_width, group_start_y + tab_height - 10.0),
+                (min_x + tab_width - 10.0, group_start_y + tab_height),
                 (min_x, group_start_y + tab_height),
             ],
             fill: self.theme.group_label_bg_color().to_string(),
             stroke: self.theme.group_border_color().to_string(),
-            stroke_width: 1.0,
+            stroke_width: 1.5,
         }));
 
-        // Group label text
+        // Group kind (bold, inside the tab)
         self.group_primitives.push(Primitive::Text(Text {
-            x: min_x + 10.0,
-            y: group_start_y + tab_height - 5.0,
-            content: label,
+            bold: true,
+            x: min_x + 15.0,
+            y: group_start_y + 13.5,
+            content: kind.to_string(),
             font_size: self.theme.font_size(),
             font_family: self.theme.font_family().to_string(),
             fill: "black".into(),
             anchor: TextAnchor::Start,
         }));
 
+        // Condition label (small bold, right of the tab)
+        if !group.label.is_empty() {
+            self.group_primitives.push(Primitive::Text(Text {
+                bold: true,
+                x: min_x + tab_width + 15.0,
+                y: group_start_y + 12.6,
+                content: format!("[{}]", group.label),
+                font_size: self.theme.font_size() - 2.0,
+                font_family: self.theme.font_family().to_string(),
+                fill: "black".into(),
+                anchor: TextAnchor::Start,
+            }));
+        }
+
         // Else dividers
         for (i, &divider_y) in else_divider_ys.iter().enumerate() {
-            self.group_primitives.push(Primitive::DashedLine(DashedLine {
-                x1: min_x,
-                y1: divider_y,
-                x2: max_x,
-                y2: divider_y,
-                stroke: self.theme.group_border_color().to_string(),
-                stroke_width: 1.0,
-                dash_array: "5,5".into(),
-            }));
+            self.group_primitives
+                .push(Primitive::DashedLine(DashedLine {
+                    x1: min_x,
+                    y1: divider_y,
+                    x2: max_x,
+                    y2: divider_y,
+                    stroke: self.theme.group_border_color().to_string(),
+                    stroke_width: 1.0,
+                    dash_array: "2,2".into(),
+                }));
 
             let else_label = if i < group.else_blocks.len() {
                 let lbl = &group.else_blocks[i].label;
                 if lbl.is_empty() {
-                    "else".to_string()
+                    "[else]".to_string()
                 } else {
-                    format!("else [{}]", lbl)
+                    format!("[{}]", lbl)
                 }
             } else {
-                "else".to_string()
+                "[else]".to_string()
             };
 
             self.group_primitives.push(Primitive::Text(Text {
-                x: min_x + 10.0,
-                y: divider_y + self.measurer.line_height(),
+                bold: true,
+                x: min_x + 5.0,
+                y: divider_y + 10.6,
                 content: else_label,
-                font_size: self.theme.font_size(),
+                font_size: self.theme.font_size() - 2.0,
                 font_family: self.theme.font_family().to_string(),
                 fill: "black".into(),
                 anchor: TextAnchor::Start,
@@ -601,24 +818,25 @@ impl<'a> LayoutContext<'a> {
     }
 
     fn layout_separator(&mut self, sep: &Separator) {
-        self.y_cursor += SEPARATOR_MARGIN;
-
         let total_width = self.calculate_total_width();
-        let y = self.y_cursor;
+        // Center line of the separator band
+        let y = self.y_cursor + MESSAGE_SPACING;
 
-        // Double line separator
-        self.fg_primitives.push(Primitive::Line(Line {
-            x1: 0.0,
-            y1: y,
-            x2: total_width,
-            y2: y,
-            stroke: self.theme.separator_color().to_string(),
-            stroke_width: 1.0,
-        }));
+        // Double line across the full diagram width
+        for dy in [-1.5, 1.5] {
+            self.fg_primitives.push(Primitive::Line(Line {
+                x1: 0.0,
+                y1: y + dy,
+                x2: total_width,
+                y2: y + dy,
+                stroke: self.theme.separator_color().to_string(),
+                stroke_width: 1.0,
+            }));
+        }
 
-        // Background for label
-        let label_width = self.measurer.measure_width(&sep.label) + 20.0;
-        let label_height = self.measurer.line_height() + 4.0;
+        // Label box over the lines
+        let label_width = self.measurer.measure_width(&sep.label) + 12.0;
+        let label_height = self.measurer.line_height() + 8.0;
         let center_x = total_width / 2.0;
 
         self.fg_primitives.push(Primitive::Rect(Rect {
@@ -628,15 +846,16 @@ impl<'a> LayoutContext<'a> {
             height: label_height,
             fill: self.theme.group_bg_color().to_string(),
             stroke: self.theme.separator_color().to_string(),
-            stroke_width: 1.0,
-            rx: 3.0,
-            ry: 3.0,
+            stroke_width: 2.0,
+            rx: 0.0,
+            ry: 0.0,
         }));
 
-        // Label text
+        // Label text (bold, centered)
         self.fg_primitives.push(Primitive::Text(Text {
+            bold: true,
             x: center_x,
-            y: y + self.measurer.line_height() * 0.3,
+            y: y + 4.5,
             content: sep.label.clone(),
             font_size: self.theme.font_size(),
             font_family: self.theme.font_family().to_string(),
@@ -644,7 +863,7 @@ impl<'a> LayoutContext<'a> {
             anchor: TextAnchor::Middle,
         }));
 
-        self.y_cursor += label_height + SEPARATOR_MARGIN;
+        self.y_cursor = y + label_height / 2.0;
     }
 
     fn layout_delay(&mut self, label: &Option<String>) {
@@ -653,6 +872,7 @@ impl<'a> LayoutContext<'a> {
         if let Some(text) = label {
             let total_width = self.calculate_total_width();
             self.fg_primitives.push(Primitive::Text(Text {
+                bold: false,
                 x: total_width / 2.0,
                 y: self.y_cursor + self.measurer.line_height() * 0.7,
                 content: text.clone(),
@@ -673,6 +893,79 @@ impl<'a> LayoutContext<'a> {
         }
         let last = self.participants.last().unwrap();
         last.x_center + last.box_width / 2.0 + DIAGRAM_MARGIN
+    }
+}
+
+/// Database cylinder body centered at `cx`, top edge at `top`.
+fn database_cylinder(cx: f32, top: f32, fill: &str, stroke: &str) -> Primitive {
+    let l = cx - DB_CYL_W / 2.0;
+    let r = cx + DB_CYL_W / 2.0;
+    let bottom = top + DB_CYL_H;
+    Primitive::Path(Path {
+        d: format!(
+            "M {},{} C {},{} {},{} {},{} C {},{} {},{} {},{} L {},{} C {},{} {},{} {},{} C {},{} {},{} {},{} Z",
+            l, top + DB_CYL_CAP,
+            l, top, cx, top, cx, top,
+            cx, top, r, top, r, top + DB_CYL_CAP,
+            r, bottom - DB_CYL_CAP,
+            r, bottom, cx, bottom, cx, bottom,
+            cx, bottom, l, bottom, l, bottom - DB_CYL_CAP,
+        ),
+        fill: fill.to_string(),
+        stroke: stroke.to_string(),
+        stroke_width: 0.5,
+        dashed: false,
+    })
+}
+
+/// The lens curve under the cylinder's top cap.
+fn database_cylinder_lens(cx: f32, top: f32, stroke: &str) -> Primitive {
+    let l = cx - DB_CYL_W / 2.0;
+    let r = cx + DB_CYL_W / 2.0;
+    let y = top + DB_CYL_CAP;
+    Primitive::Path(Path {
+        d: format!(
+            "M {},{} C {},{} {},{} {},{} C {},{} {},{} {},{}",
+            l,
+            y,
+            l,
+            y + DB_CYL_CAP,
+            cx,
+            y + DB_CYL_CAP,
+            cx,
+            y + DB_CYL_CAP,
+            cx,
+            y + DB_CYL_CAP,
+            r,
+            y + DB_CYL_CAP,
+            r,
+            y,
+        ),
+        fill: "none".into(),
+        stroke: stroke.to_string(),
+        stroke_width: 0.5,
+        dashed: false,
+    })
+}
+
+/// Collect the names of all participants that exchange messages inside a group
+/// (including its else blocks and nested groups).
+fn collect_group_participants(group: &Group, names: &mut std::collections::HashSet<String>) {
+    fn walk(elements: &[SequenceElement], names: &mut std::collections::HashSet<String>) {
+        for element in elements {
+            match element {
+                SequenceElement::Message(msg) => {
+                    names.insert(msg.from.clone());
+                    names.insert(msg.to.clone());
+                }
+                SequenceElement::Group(g) => collect_group_participants(g, names),
+                _ => {}
+            }
+        }
+    }
+    walk(&group.elements, names);
+    for else_block in &group.else_blocks {
+        walk(&else_block.elements, names);
     }
 }
 
@@ -716,7 +1009,11 @@ mod tests {
             .filter(|p| matches!(p, Primitive::Rect(_)))
             .count();
         // Background + 2 participants top + 2 participants bottom = 4 participant rects minimum
-        assert!(rect_count >= 4, "expected at least 4 rects, got {}", rect_count);
+        assert!(
+            rect_count >= 4,
+            "expected at least 4 rects, got {}",
+            rect_count
+        );
     }
 
     #[test]
@@ -748,9 +1045,10 @@ mod tests {
         assert!(laid_out.width > 0.0);
         assert!(laid_out.height > 0.0);
         // Should have group frame rect
-        let has_group_frame = laid_out.primitives.iter().any(|p| {
-            matches!(p, Primitive::Rect(r) if r.fill == "none")
-        });
+        let has_group_frame = laid_out
+            .primitives
+            .iter()
+            .any(|p| matches!(p, Primitive::Rect(r) if r.fill == "none"));
         assert!(has_group_frame, "expected group frame rectangle");
     }
 
@@ -759,20 +1057,22 @@ mod tests {
         let input = "Alice -> Bob : Hello\nnote right of Alice : This is a note";
         let laid_out = layout_from_text(input);
         // Note should add a rect with note background color
-        let has_note = laid_out.primitives.iter().any(|p| {
-            matches!(p, Primitive::Rect(r) if r.fill == "#FBFB77")
-        });
-        assert!(has_note, "expected note rectangle");
+        let has_note = laid_out
+            .primitives
+            .iter()
+            .any(|p| matches!(p, Primitive::Path(path) if path.fill == "#FEFFDD"));
+        assert!(has_note, "expected note body path");
     }
 
     #[test]
     fn test_layout_with_separator() {
         let input = "Alice -> Bob : Hello\n== Phase 2 ==\nBob -> Alice : World";
         let laid_out = layout_from_text(input);
-        // Separator should include a rect with label background
-        let has_sep_rect = laid_out.primitives.iter().any(|p| {
-            matches!(p, Primitive::Rect(r) if r.rx > 0.0)
-        });
+        // Separator should include the label box on the double line
+        let has_sep_rect = laid_out
+            .primitives
+            .iter()
+            .any(|p| matches!(p, Primitive::Rect(r) if r.fill == "#EEEEEE"));
         assert!(has_sep_rect, "expected separator label rect");
     }
 
@@ -833,18 +1133,27 @@ deactivate Server"#;
         let laid_out = layout_from_text(input);
 
         // Find the else label text and the "no" message text
-        let texts: Vec<&Text> = laid_out.primitives.iter().filter_map(|p| {
-            if let Primitive::Text(t) = p { Some(t) } else { None }
-        }).collect();
+        let texts: Vec<&Text> = laid_out
+            .primitives
+            .iter()
+            .filter_map(|p| {
+                if let Primitive::Text(t) = p {
+                    Some(t)
+                } else {
+                    None
+                }
+            })
+            .collect();
 
-        let else_text = texts.iter().find(|t| t.content.starts_with("else")).unwrap();
+        let else_text = texts.iter().find(|t| t.content == "[fail]").unwrap();
         let no_text = texts.iter().find(|t| t.content == "no").unwrap();
 
         // The "no" message label must be below the else label, not overlapping
         assert!(
             no_text.y > else_text.y + 5.0,
             "else label (y={}) and message 'no' (y={}) overlap",
-            else_text.y, no_text.y,
+            else_text.y,
+            no_text.y,
         );
     }
 }

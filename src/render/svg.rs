@@ -81,9 +81,16 @@ impl SvgBuilder {
             TextAnchor::Middle => "middle",
             TextAnchor::End => "end",
         };
+        let weight = if t.bold { r#" font-weight="bold""# } else { "" };
         self.content.push_str(&format!(
-            r#"<text x="{}" y="{}" font-size="{}" font-family="{}" fill="{}" text-anchor="{}">"#,
-            t.x, t.y, t.font_size, xml_escape(&t.font_family), t.fill, anchor,
+            r#"<text x="{}" y="{}" font-size="{}" font-family="{}" fill="{}" text-anchor="{}"{}>"#,
+            t.x,
+            t.y,
+            t.font_size,
+            xml_escape(&t.font_family),
+            t.fill,
+            anchor,
+            weight,
         ));
         // Handle multi-line text
         let lines: Vec<&str> = t.content.lines().collect();
@@ -113,7 +120,7 @@ impl SvgBuilder {
         // Draw the line
         if a.dashed {
             self.content.push_str(&format!(
-                r#"<line x1="{}" y1="{}" x2="{}" y2="{}" stroke="{}" stroke-width="{}" stroke-dasharray="5,3"/>"#,
+                r#"<line x1="{}" y1="{}" x2="{}" y2="{}" stroke="{}" stroke-width="{}" stroke-dasharray="2,2"/>"#,
                 a.x1, a.y1, a.x2, a.y2, a.stroke, a.stroke_width,
             ));
         } else {
@@ -131,8 +138,10 @@ impl SvgBuilder {
             return;
         }
         let (ux, uy) = (dx / len, dy / len);
-        let head_len = 8.0;
-        let head_width = 5.0;
+        // PlantUML-style concave arrowhead: length 10, half-width 4, notch 6 back from tip.
+        let head_len = 10.0;
+        let head_width = 4.0;
+        let notch_len = 6.0;
 
         let tip_x = a.x2;
         let tip_y = a.y2;
@@ -142,12 +151,14 @@ impl SvgBuilder {
         let left_y = base_y + ux * head_width;
         let right_x = base_x + uy * head_width;
         let right_y = base_y - ux * head_width;
+        let notch_x = tip_x - ux * notch_len;
+        let notch_y = tip_y - uy * notch_len;
 
         match a.head {
             ArrowHeadStyle::Filled => {
                 self.content.push_str(&format!(
-                    r#"<polygon points="{},{} {},{} {},{}" fill="{}" stroke="none"/>"#,
-                    tip_x, tip_y, left_x, left_y, right_x, right_y, a.stroke,
+                    r#"<polygon points="{},{} {},{} {},{} {},{}" fill="{}" stroke="none"/>"#,
+                    left_x, left_y, tip_x, tip_y, right_x, right_y, notch_x, notch_y, a.stroke,
                 ));
             }
             ArrowHeadStyle::Open => {
@@ -161,7 +172,11 @@ impl SvgBuilder {
     }
 
     fn polygon(&mut self, p: &Polygon) {
-        let points: Vec<String> = p.points.iter().map(|(x, y)| format!("{},{}", x, y)).collect();
+        let points: Vec<String> = p
+            .points
+            .iter()
+            .map(|(x, y)| format!("{},{}", x, y))
+            .collect();
         self.content.push_str(&format!(
             r#"<polygon points="{}" fill="{}" stroke="{}" stroke-width="{}"/>"#,
             points.join(" "),
@@ -178,7 +193,7 @@ impl SvgBuilder {
             p.d, p.fill, p.stroke, p.stroke_width,
         ));
         if p.dashed {
-            self.content.push_str(r#" stroke-dasharray="5,3""#);
+            self.content.push_str(r#" stroke-dasharray="2,2""#);
         }
         self.content.push_str("/>\n");
     }
@@ -242,6 +257,7 @@ mod tests {
             width: 200.0,
             height: 200.0,
             primitives: vec![Primitive::Text(Text {
+                bold: false,
                 x: 10.0,
                 y: 20.0,
                 content: "A <-> B".into(),

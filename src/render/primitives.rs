@@ -55,6 +55,7 @@ pub struct Text {
     pub font_family: String,
     pub fill: String,
     pub anchor: TextAnchor,
+    pub bold: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
