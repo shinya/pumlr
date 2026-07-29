@@ -1319,7 +1319,9 @@ impl<'a> ActivityLayoutContext<'a> {
             self.draw_down_arrow(hex_cx, hex_bottom, target_y, None);
             return;
         }
-        if dx.abs() <= hex_half_w + 12.0 {
+        // Elbow only when the target sits inside the hexagon's width — a
+        // horizontal segment from a side vertex would cross the shape there.
+        if dx.abs() <= hex_half_w {
             let elbow_y = hex_bottom + 6.0;
             self.primitives.push(Primitive::Path(Path {
                 d: format!(
@@ -1367,7 +1369,9 @@ impl<'a> ActivityLayoutContext<'a> {
             self.draw_down_arrow(x1, y1, merge_top, None);
             return;
         }
-        if dx.abs() <= MERGE_HALF + 12.0 {
+        // Elbow into the top vertex only when the source is inside the
+        // diamond's width — a horizontal entry would cross the shape there.
+        if dx.abs() <= MERGE_HALF {
             let elbow_y = merge_top - 6.0;
             self.primitives.push(Primitive::Path(Path {
                 d: format!(
