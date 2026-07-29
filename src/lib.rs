@@ -1,3 +1,15 @@
+//! A pure-Rust PlantUML renderer — generates SVG from PlantUML text without
+//! Java or Graphviz.
+//!
+//! Sequence diagrams and activity diagrams are supported; the output is
+//! matched against the Java PlantUML 1.2026 default style (see the project
+//! README for the supported syntax and the comparison workflow).
+//!
+//! ```
+//! let svg = pumlr::render_svg("@startuml\nAlice -> Bob : Hello\n@enduml").unwrap();
+//! assert!(svg.starts_with("<svg"));
+//! ```
+
 pub mod ast;
 pub mod diagram;
 pub mod error;
@@ -15,15 +27,16 @@ pub use error::PlantUmlError;
 /// Rendering options.
 #[derive(Debug, Clone, Default)]
 pub struct RenderOptions {
-    /// Theme name (None = default).
+    /// Theme name: `None` or `"default"` for the PlantUML 1.2026 default
+    /// style, `"classic"` for the pre-2023 pale-yellow style.
     pub theme: Option<String>,
-    /// Whether to embed fonts in the SVG.
+    /// Whether to embed fonts in the SVG. Not implemented yet.
     pub embed_fonts: bool,
-    /// Dark mode.
+    /// Dark mode. Not implemented yet.
     pub dark_mode: bool,
-    /// Custom font file paths.
+    /// Custom font file paths. Not implemented yet.
     pub font_paths: Vec<PathBuf>,
-    /// Search paths for `!include` directives.
+    /// Search paths for `!include` directives. Not implemented yet.
     pub include_paths: Vec<PathBuf>,
 }
 
@@ -33,23 +46,32 @@ pub fn render_svg(input: &str) -> Result<String, PlantUmlError> {
 }
 
 /// Render PlantUML text to SVG with the given options.
+///
+/// `options.theme` selects the visual style: `None` or `"default"` renders
+/// the PlantUML 1.2026 default look, `"classic"` the pre-2023 pale-yellow
+/// look. Unknown names fall back to the default theme.
 pub fn render_svg_with_options(
     input: &str,
-    _options: &RenderOptions,
+    options: &RenderOptions,
 ) -> Result<String, PlantUmlError> {
     let preprocessed = preprocess::preprocess(input)?;
 
     let diagram_type = refine_diagram_type(preprocessed.diagram_type, &preprocessed.body);
 
+    let theme: &dyn theme::Theme = match options.theme.as_deref() {
+        Some(name) if name.eq_ignore_ascii_case("classic") => &theme::ClassicTheme,
+        _ => &theme::DefaultTheme,
+    };
+
     match diagram_type {
         DiagramType::Sequence => {
             let diagram = parser::sequence::parse(&preprocessed.body)?;
-            let laid_out = layout::sequence::layout(&diagram);
+            let laid_out = layout::sequence::layout_with_theme(&diagram, theme);
             Ok(render::svg::render(&laid_out))
         }
         DiagramType::Activity => {
             let diagram = parser::activity::parse(&preprocessed.body)?;
-            let laid_out = layout::activity::layout(&diagram);
+            let laid_out = layout::activity::layout_with_theme(&diagram, theme);
             Ok(render::svg::render(&laid_out))
         }
         other => Err(PlantUmlError::UnsupportedDiagram(format!("{:?}", other))),
@@ -73,8 +95,18 @@ fn refine_diagram_type(initial: DiagramType, body: &str) -> DiagramType {
     // Activity diagram indicators: these keywords appear at the start of a line
     // and are NOT valid in sequence diagrams.
     let activity_keywords = [
-        "start", "stop", "if (", "if(", "while (", "while(",
-        "fork", "switch (", "switch(", "partition ",
+        "start",
+        "stop",
+        "if (",
+        "if(",
+        "while (",
+        "while(",
+        "repeat",
+        "backward",
+        "fork",
+        "switch (",
+        "switch(",
+        "partition ",
     ];
 
     for line in body.lines() {

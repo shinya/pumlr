@@ -47,6 +47,8 @@ impl TextMeasurer {
 /// Advance width of a character as a fraction of the font size (em),
 /// based on DejaVu Sans metrics. Non-ASCII characters (e.g. CJK) are
 /// treated as full-width.
+// 0.318 is DejaVu's space advance, not an approximation of 1/π.
+#[allow(clippy::approx_constant)]
 fn char_em_width(ch: char) -> f32 {
     match ch {
         ' ' => 0.318,

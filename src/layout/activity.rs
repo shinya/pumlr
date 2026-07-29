@@ -2,6 +2,7 @@ use crate::ast::activity::*;
 use crate::layout::text_measure::TextMeasurer;
 use crate::render::primitives::*;
 use crate::render::svg::LaidOutDiagram;
+use crate::theme::{DefaultTheme, Theme};
 
 // --- Layout metrics (matched against PlantUML 1.2026 default style, see SPEC.md) ---
 
@@ -45,29 +46,29 @@ const WHILE_LOOP_DROP: f32 = 10.0;
 const WHILE_EXIT_DROP: f32 = 12.0;
 /// If/elseif chain: gap between branch columns.
 const CHAIN_COL_GAP: f32 = 15.0;
+/// Repeat loop: gap between the body's right edge and the backward action.
+const REPEAT_RAIL_GAP: f32 = 24.0;
 /// If/elseif chain: gap between hexagon bottom and branch tops.
 const CHAIN_BRANCH_GAP: f32 = 33.0;
 
-// --- Style (PlantUML 1.2026 default) ---
+// --- Text metrics (colors live in the Theme, see src/theme) ---
 
-const SHAPE_FILL: &str = "#F1F1F1";
-const SHAPE_STROKE: &str = "#181818";
-const SHAPE_STROKE_W: f32 = 0.5;
-const START_STOP_COLOR: &str = "#222222";
-const EDGE_COLOR: &str = "#181818";
-const TEXT_COLOR: &str = "#000000";
 const FONT_FAMILY: &str = "sans-serif";
 const FONT_SIZE: f32 = 12.0;
 const LABEL_FONT_SIZE: f32 = 11.0;
 const TITLE_FONT_SIZE: f32 = 14.0;
-const NOTE_FILL: &str = "#FEFFDD";
 
-/// Layout a parsed activity diagram into primitives.
+/// Layout a parsed activity diagram into primitives with the default theme.
 pub fn layout(diagram: &ActivityDiagram) -> LaidOutDiagram {
+    layout_with_theme(diagram, &DefaultTheme)
+}
+
+/// Layout a parsed activity diagram into primitives with the given theme.
+pub fn layout_with_theme(diagram: &ActivityDiagram, theme: &dyn Theme) -> LaidOutDiagram {
     let measurer = TextMeasurer::new(FONT_SIZE);
     let label_measurer = TextMeasurer::new(LABEL_FONT_SIZE);
 
-    let mut ctx = ActivityLayoutContext::new(&measurer, &label_measurer);
+    let mut ctx = ActivityLayoutContext::new(theme, &measurer, &label_measurer);
     ctx.layout(diagram)
 }
 
@@ -81,14 +82,20 @@ struct SubtreeBox {
 }
 
 struct ActivityLayoutContext<'a> {
+    theme: &'a dyn Theme,
     measurer: &'a TextMeasurer,
     label_measurer: &'a TextMeasurer,
     primitives: Vec<Primitive>,
 }
 
 impl<'a> ActivityLayoutContext<'a> {
-    fn new(measurer: &'a TextMeasurer, label_measurer: &'a TextMeasurer) -> Self {
+    fn new(
+        theme: &'a dyn Theme,
+        measurer: &'a TextMeasurer,
+        label_measurer: &'a TextMeasurer,
+    ) -> Self {
         Self {
+            theme,
             measurer,
             label_measurer,
             primitives: Vec::new(),
@@ -119,7 +126,7 @@ impl<'a> ActivityLayoutContext<'a> {
                 content: title.clone(),
                 font_size: TITLE_FONT_SIZE,
                 font_family: FONT_FAMILY.into(),
-                fill: TEXT_COLOR.into(),
+                fill: self.theme.activity_text_color().into(),
                 anchor: TextAnchor::Middle,
                 bold: true,
             }));
@@ -235,12 +242,15 @@ impl<'a> ActivityLayoutContext<'a> {
                     center_x: 0.0,
                 }
             }
+            ActivityElement::Repeat(block) => self.measure_repeat(block),
+            // An edge label contributes no height of its own: the surrounding
+            // connector is drawn as one longer arrow with the label beside it.
             ActivityElement::Arrow(arrow) => {
-                let w = self.measurer.measure_width(&arrow.label) + 20.0;
+                let w = self.measurer.measure_width(&arrow.label) + 10.0;
                 SubtreeBox {
                     width: w,
-                    height: 10.0,
-                    center_x: w / 2.0,
+                    height: 0.0,
+                    center_x: 5.0,
                 }
             }
         }
@@ -344,6 +354,35 @@ impl<'a> ActivityLayoutContext<'a> {
         }
     }
 
+    /// Size of the backward action box on a repeat loop's rail.
+    fn backward_size(&self, label: &str) -> (f32, f32) {
+        let w = self.measurer.measure_multiline_width(label) + ACTION_PADDING_H * 2.0;
+        let h = self.measurer.measure_multiline_height(label) + ACTION_PADDING_V * 2.0;
+        (w, h)
+    }
+
+    fn measure_repeat(&self, block: &RepeatBlock) -> SubtreeBox {
+        let inner = self.measure_elements(&block.elements);
+        let hex_w = self.hex_width(&block.condition);
+        let content_half = inner.width.max(hex_w) / 2.0;
+
+        // Rail to the right, with the backward action box on it (if any)
+        let rail_extent = match &block.backward {
+            Some(label) => {
+                let (bw, _) = self.backward_size(label);
+                content_half + REPEAT_RAIL_GAP + bw
+            }
+            None => content_half + WHILE_RAIL_MARGIN,
+        };
+
+        let h = MERGE_HALF * 2.0 + ARROW_SPACING + inner.height + ARROW_SPACING + HEX_HALF_H * 2.0;
+        SubtreeBox {
+            width: content_half + rail_extent,
+            height: h,
+            center_x: content_half,
+        }
+    }
+
     fn measure_fork(&self, block: &ForkBlock) -> SubtreeBox {
         let branch_boxes: Vec<SubtreeBox> = block
             .branches
@@ -363,6 +402,18 @@ impl<'a> ActivityLayoutContext<'a> {
         }
     }
 
+    /// Case column centers relative to the block's left edge.
+    fn switch_columns(&self, block: &SwitchBlock) -> Vec<f32> {
+        let mut centers = Vec::new();
+        let mut x = 0.0;
+        for case in &block.cases {
+            let w = self.measure_elements(&case.elements).width.max(60.0);
+            centers.push(x + w / 2.0);
+            x += w + BRANCH_GAP;
+        }
+        centers
+    }
+
     fn measure_switch(&self, block: &SwitchBlock) -> SubtreeBox {
         let case_boxes: Vec<SubtreeBox> = block
             .cases
@@ -374,30 +425,71 @@ impl<'a> ActivityLayoutContext<'a> {
             + BRANCH_GAP * (case_boxes.len().saturating_sub(1) as f32);
         let max_height = case_boxes.iter().map(|b| b.height).fold(0.0f32, f32::max);
 
+        // Like PlantUML, the hexagon (and the flow) aligns with the middle
+        // case column, not the geometric center of all columns.
+        let centers = self.switch_columns(block);
+        let center_x = if centers.is_empty() {
+            total_width / 2.0
+        } else if centers.len() % 2 == 1 {
+            centers[centers.len() / 2]
+        } else {
+            (centers[centers.len() / 2 - 1] + centers[centers.len() / 2]) / 2.0
+        };
+
         let h = HEX_HALF_H * 2.0 + CHAIN_BRANCH_GAP + max_height + MERGE_TOP_GAP + MERGE_HALF * 2.0;
         SubtreeBox {
             width: total_width.max(self.hex_width(&block.condition)),
             height: h,
-            center_x: total_width / 2.0,
+            center_x,
         }
     }
 
     // --- Draw pass ---
 
     fn draw_elements(&mut self, elements: &[ActivityElement], center_x: f32, mut y: f32) -> f32 {
-        for (i, element) in elements.iter().enumerate() {
+        let mut first = true;
+        let mut pending_label: Option<String> = None;
+        for element in elements {
+            // `-> label;` labels the next connector instead of being drawn
+            // as an element of its own.
+            if let ActivityElement::Arrow(arrow) = element {
+                pending_label = Some(arrow.label.clone());
+                continue;
+            }
+
             // Draw downward arrow from previous element (except before the
-            // first). An if/elseif chain draws its own entry elbow instead.
-            if i > 0 {
+            // first). An if/elseif chain draws its own entry elbow, and a
+            // partition is entered with a plain line (the arrowhead is drawn
+            // inside, on the first inner element).
+            if !first {
+                // A labeled connector is one spacing longer to fit the label.
+                let gap = if pending_label.is_some() {
+                    ARROW_SPACING * 2.0
+                } else {
+                    ARROW_SPACING
+                };
                 let chain_entry =
                     matches!(element, ActivityElement::If(b) if !b.elseif_blocks.is_empty());
-                if !chain_entry {
-                    self.draw_down_arrow(center_x, y, y + ARROW_SPACING, None);
+                if chain_entry {
+                    // the chain draws its own elbow
+                } else if matches!(element, ActivityElement::Partition(_)) {
+                    self.primitives.push(Primitive::Line(Line {
+                        x1: center_x,
+                        y1: y,
+                        x2: center_x,
+                        y2: y + gap,
+                        stroke: self.theme.activity_edge_color().into(),
+                        stroke_width: 1.0,
+                    }));
+                } else {
+                    self.draw_down_arrow(center_x, y, y + gap, pending_label.as_deref());
                 }
-                y += ARROW_SPACING;
+                y += gap;
+                pending_label = None;
             }
 
             y = self.draw_element(element, center_x, y);
+            first = false;
         }
         y
     }
@@ -421,17 +513,15 @@ impl<'a> ActivityLayoutContext<'a> {
             ActivityElement::While(block) => self.draw_while(block, center_x, y),
             ActivityElement::Fork(block) => self.draw_fork(block, center_x, y),
             ActivityElement::Switch(block) => self.draw_switch(block, center_x, y),
+            ActivityElement::Repeat(block) => self.draw_repeat(block, center_x, y),
             ActivityElement::Partition(partition) => self.draw_partition(partition, center_x, y),
             ActivityElement::Note(note) => {
                 self.draw_note(note, center_x, y);
                 let sub = self.measure_element(element);
                 y + sub.height
             }
-            ActivityElement::Arrow(_) => {
-                // Arrow label is drawn as part of the connecting arrow
-                // Just reserve space
-                y + 10.0
-            }
+            // Edge labels are folded into the connectors by draw_elements
+            ActivityElement::Arrow(_) => y,
         }
     }
 
@@ -446,9 +536,9 @@ impl<'a> ActivityLayoutContext<'a> {
             y,
             width: w,
             height: h,
-            fill: SHAPE_FILL.into(),
-            stroke: SHAPE_STROKE.into(),
-            stroke_width: SHAPE_STROKE_W,
+            fill: self.theme.activity_shape_fill().into(),
+            stroke: self.theme.activity_shape_stroke().into(),
+            stroke_width: self.theme.activity_shape_stroke_width(),
             rx: ACTION_RADIUS,
             ry: ACTION_RADIUS,
         }));
@@ -464,7 +554,7 @@ impl<'a> ActivityLayoutContext<'a> {
             content: action.label.clone(),
             font_size: FONT_SIZE,
             font_family: FONT_FAMILY.into(),
-            fill: TEXT_COLOR.into(),
+            fill: self.theme.activity_text_color().into(),
             anchor: TextAnchor::Middle,
             bold: false,
         }));
@@ -491,7 +581,7 @@ impl<'a> ActivityLayoutContext<'a> {
 
         // Then branch (left)
         let then_cx = center_x - BRANCH_GAP / 2.0 - then_box.width / 2.0;
-        self.draw_branch_edge_out(hex_left, cy, then_cx, branch_top);
+        self.draw_branch_edge_out(center_x, cy, hex_half_w, then_cx, branch_top);
         if !block.then_label.is_empty() {
             self.draw_side_label(hex_left, cy, &block.then_label, TextAnchor::End);
         }
@@ -499,7 +589,7 @@ impl<'a> ActivityLayoutContext<'a> {
 
         // Else branch (right)
         let else_cx = center_x + BRANCH_GAP / 2.0 + else_box.width / 2.0;
-        self.draw_branch_edge_out(hex_right, cy, else_cx, branch_top);
+        self.draw_branch_edge_out(center_x, cy, hex_half_w, else_cx, branch_top);
         if !block.else_label.is_empty() {
             self.draw_side_label(hex_right, cy, &block.else_label, TextAnchor::Start);
         }
@@ -547,13 +637,13 @@ impl<'a> ActivityLayoutContext<'a> {
                 y,
             ),
             fill: "none".into(),
-            stroke: EDGE_COLOR.into(),
+            stroke: self.theme.activity_edge_color().into(),
             stroke_width: 1.0,
             dashed: false,
         }));
         self.primitives.push(Primitive::Polygon(Polygon {
             points: concave_head(cols[0], y, 0.0, 1.0),
-            fill: EDGE_COLOR.into(),
+            fill: self.theme.activity_edge_color().into(),
             stroke: "none".into(),
             stroke_width: 0.0,
         }));
@@ -586,7 +676,7 @@ impl<'a> ActivityLayoutContext<'a> {
                     content: then_label.to_string(),
                     font_size: LABEL_FONT_SIZE,
                     font_family: FONT_FAMILY.into(),
-                    fill: TEXT_COLOR.into(),
+                    fill: self.theme.activity_text_color().into(),
                     anchor: TextAnchor::Start,
                     bold: false,
                 }));
@@ -604,12 +694,12 @@ impl<'a> ActivityLayoutContext<'a> {
                     y1: cy,
                     x2: next_left,
                     y2: cy,
-                    stroke: EDGE_COLOR.into(),
+                    stroke: self.theme.activity_edge_color().into(),
                     stroke_width: 1.0,
                 }));
                 self.primitives.push(Primitive::Polygon(Polygon {
                     points: concave_head(next_left, cy, 1.0, 0.0),
-                    fill: EDGE_COLOR.into(),
+                    fill: self.theme.activity_edge_color().into(),
                     stroke: "none".into(),
                     stroke_width: 0.0,
                 }));
@@ -625,13 +715,13 @@ impl<'a> ActivityLayoutContext<'a> {
                         hex_right, cy, else_cx, cy, else_cx, branch_top,
                     ),
                     fill: "none".into(),
-                    stroke: EDGE_COLOR.into(),
+                    stroke: self.theme.activity_edge_color().into(),
                     stroke_width: 1.0,
                     dashed: false,
                 }));
                 self.primitives.push(Primitive::Polygon(Polygon {
                     points: concave_head(else_cx, branch_top, 0.0, 1.0),
-                    fill: EDGE_COLOR.into(),
+                    fill: self.theme.activity_edge_color().into(),
                     stroke: "none".into(),
                     stroke_width: 0.0,
                 }));
@@ -647,7 +737,7 @@ impl<'a> ActivityLayoutContext<'a> {
             y1: junction_y,
             x2: cols[n_conds],
             y2: junction_y,
-            stroke: EDGE_COLOR.into(),
+            stroke: self.theme.activity_edge_color().into(),
             stroke_width: 1.0,
         }));
         for (cx, end_y) in cols.iter().zip(&branch_ends) {
@@ -655,6 +745,123 @@ impl<'a> ActivityLayoutContext<'a> {
         }
 
         junction_y
+    }
+
+    /// Repeat loop, wired like PlantUML: entry merge diamond on top, body,
+    /// condition hexagon at the bottom; the loop-back rail runs up the right
+    /// side (through the backward action, if any) into the diamond's right
+    /// vertex. The flow exits from the hexagon's bottom vertex.
+    fn draw_repeat(&mut self, block: &RepeatBlock, center_x: f32, y: f32) -> f32 {
+        let total_box = self.measure_repeat(block);
+        let inner = self.measure_elements(&block.elements);
+        let hex_w = self.hex_width(&block.condition);
+        let content_half = inner.width.max(hex_w) / 2.0;
+
+        // Entry merge diamond
+        let diamond_cy = y + MERGE_HALF;
+        self.draw_merge_diamond(center_x, diamond_cy);
+
+        // Body
+        let body_top = y + MERGE_HALF * 2.0 + ARROW_SPACING;
+        self.draw_down_arrow(center_x, y + MERGE_HALF * 2.0, body_top, None);
+        let body_end_y = self.draw_elements(&block.elements, center_x, body_top);
+
+        // Condition hexagon at the bottom
+        let hex_top = body_end_y + ARROW_SPACING;
+        self.draw_down_arrow(center_x, body_end_y, hex_top, None);
+        let hex_cy = hex_top + HEX_HALF_H;
+        self.draw_condition_hexagon(center_x, hex_cy, &block.condition);
+        let hex_right = center_x + hex_w / 2.0;
+
+        // is-label ("yes") outside the right vertex
+        if !block.is_label.is_empty() {
+            self.draw_side_label(hex_right, hex_cy, &block.is_label, TextAnchor::Start);
+        }
+
+        // Loop-back rail on the right, up into the diamond's right vertex
+        let rail_x = match &block.backward {
+            Some(label) => {
+                let (bw, _) = self.backward_size(label);
+                center_x + content_half + REPEAT_RAIL_GAP + bw / 2.0
+            }
+            None => center_x + content_half + WHILE_RAIL_MARGIN,
+        };
+
+        if let Some(label) = &block.backward {
+            let (_, bh) = self.backward_size(label);
+            let backward_top = body_top + (inner.height - bh) / 2.0;
+            let backward_bottom = backward_top + bh;
+
+            // Up from the hexagon's right vertex into the backward action
+            self.primitives.push(Primitive::Path(Path {
+                d: format!(
+                    "M {},{} L {},{} L {},{}",
+                    hex_right, hex_cy, rail_x, hex_cy, rail_x, backward_bottom,
+                ),
+                fill: "none".into(),
+                stroke: self.theme.activity_edge_color().into(),
+                stroke_width: 1.0,
+                dashed: false,
+            }));
+            self.primitives.push(Primitive::Polygon(Polygon {
+                points: concave_head(rail_x, backward_bottom, 0.0, -1.0),
+                fill: self.theme.activity_edge_color().into(),
+                stroke: "none".into(),
+                stroke_width: 0.0,
+            }));
+
+            self.draw_action(
+                &Action {
+                    label: label.clone(),
+                    shape: ActionShape::Action,
+                },
+                rail_x,
+                backward_top,
+            );
+
+            // From the backward action up into the diamond's right vertex
+            self.primitives.push(Primitive::Path(Path {
+                d: format!(
+                    "M {},{} L {},{} L {},{}",
+                    rail_x,
+                    backward_top,
+                    rail_x,
+                    diamond_cy,
+                    center_x + MERGE_HALF,
+                    diamond_cy,
+                ),
+                fill: "none".into(),
+                stroke: self.theme.activity_edge_color().into(),
+                stroke_width: 1.0,
+                dashed: false,
+            }));
+        } else {
+            self.primitives.push(Primitive::Path(Path {
+                d: format!(
+                    "M {},{} L {},{} L {},{} L {},{}",
+                    hex_right,
+                    hex_cy,
+                    rail_x,
+                    hex_cy,
+                    rail_x,
+                    diamond_cy,
+                    center_x + MERGE_HALF,
+                    diamond_cy,
+                ),
+                fill: "none".into(),
+                stroke: self.theme.activity_edge_color().into(),
+                stroke_width: 1.0,
+                dashed: false,
+            }));
+        }
+        self.primitives.push(Primitive::Polygon(Polygon {
+            points: concave_head(center_x + MERGE_HALF, diamond_cy, -1.0, 0.0),
+            fill: self.theme.activity_edge_color().into(),
+            stroke: "none".into(),
+            stroke_width: 0.0,
+        }));
+
+        y + total_box.height
     }
 
     /// While loop, wired like PlantUML: body below the hexagon, loop-back rail
@@ -679,7 +886,7 @@ impl<'a> ActivityLayoutContext<'a> {
                 content: block.is_label.clone(),
                 font_size: LABEL_FONT_SIZE,
                 font_family: FONT_FAMILY.into(),
-                fill: TEXT_COLOR.into(),
+                fill: self.theme.activity_text_color().into(),
                 anchor: TextAnchor::Start,
                 bold: false,
             }));
@@ -712,19 +919,19 @@ impl<'a> ActivityLayoutContext<'a> {
                 cy,
             ),
             fill: "none".into(),
-            stroke: EDGE_COLOR.into(),
+            stroke: self.theme.activity_edge_color().into(),
             stroke_width: 1.0,
             dashed: false,
         }));
         self.primitives.push(Primitive::Polygon(Polygon {
             points: concave_head(rail_r, (cy + loop_turn_y) / 2.0, 0.0, -1.0),
-            fill: EDGE_COLOR.into(),
+            fill: self.theme.activity_edge_color().into(),
             stroke: "none".into(),
             stroke_width: 0.0,
         }));
         self.primitives.push(Primitive::Polygon(Polygon {
             points: concave_head(hex_right, cy, -1.0, 0.0),
-            fill: EDGE_COLOR.into(),
+            fill: self.theme.activity_edge_color().into(),
             stroke: "none".into(),
             stroke_width: 0.0,
         }));
@@ -737,13 +944,13 @@ impl<'a> ActivityLayoutContext<'a> {
                 hex_left, cy, rail_l, cy, rail_l, junction_y, center_x, junction_y,
             ),
             fill: "none".into(),
-            stroke: EDGE_COLOR.into(),
+            stroke: self.theme.activity_edge_color().into(),
             stroke_width: 1.0,
             dashed: false,
         }));
         self.primitives.push(Primitive::Polygon(Polygon {
             points: concave_head(rail_l, (cy + junction_y) / 2.0, 0.0, 1.0),
-            fill: EDGE_COLOR.into(),
+            fill: self.theme.activity_edge_color().into(),
             stroke: "none".into(),
             stroke_width: 0.0,
         }));
@@ -773,7 +980,7 @@ impl<'a> ActivityLayoutContext<'a> {
             y,
             width: total_branches_width + FORK_BAR_EXTEND * 2.0,
             height: FORK_BAR_HEIGHT,
-            fill: START_STOP_COLOR.into(),
+            fill: self.theme.activity_start_stop_color().into(),
             stroke: "none".into(),
             stroke_width: 0.0,
             rx: 2.5,
@@ -801,7 +1008,7 @@ impl<'a> ActivityLayoutContext<'a> {
             y: bottom_bar_y,
             width: total_branches_width + FORK_BAR_EXTEND * 2.0,
             height: FORK_BAR_HEIGHT,
-            fill: START_STOP_COLOR.into(),
+            fill: self.theme.activity_start_stop_color().into(),
             stroke: "none".into(),
             stroke_width: 0.0,
             rx: 2.5,
@@ -824,8 +1031,8 @@ impl<'a> ActivityLayoutContext<'a> {
         self.draw_condition_hexagon(center_x, cy, &block.condition);
         let hex_half_w = self.hex_width(&block.condition) / 2.0;
 
-        let total_cases_width = total_box.width;
-        let left_x = center_x - total_cases_width / 2.0;
+        // Columns positioned so the middle one aligns with the hexagon center
+        let left_x = center_x - total_box.center_x;
         let branch_top_y = y + HEX_HALF_H * 2.0 + CHAIN_BRANCH_GAP;
 
         let merge_cy = y + total_box.height - MERGE_HALF;
@@ -835,12 +1042,7 @@ impl<'a> ActivityLayoutContext<'a> {
             let case_w = cbox.width.max(60.0);
             let case_cx = cx + case_w / 2.0;
 
-            let exit_x = if case_cx < center_x {
-                center_x - hex_half_w
-            } else {
-                center_x + hex_half_w
-            };
-            self.draw_branch_edge_out(exit_x, cy, case_cx, branch_top_y);
+            self.draw_branch_edge_out(center_x, cy, hex_half_w, case_cx, branch_top_y);
 
             // Case label sits beside the vertical entry edge, halfway down
             if !case.label.is_empty() {
@@ -850,7 +1052,7 @@ impl<'a> ActivityLayoutContext<'a> {
                     content: case.label.clone(),
                     font_size: LABEL_FONT_SIZE,
                     font_family: FONT_FAMILY.into(),
-                    fill: TEXT_COLOR.into(),
+                    fill: self.theme.activity_text_color().into(),
                     anchor: TextAnchor::Start,
                     bold: false,
                 }));
@@ -887,7 +1089,7 @@ impl<'a> ActivityLayoutContext<'a> {
             width: w,
             height: h,
             fill: "none".into(),
-            stroke: "#000000".into(),
+            stroke: self.theme.partition_border_color().into(),
             stroke_width: 1.5,
             rx: 0.0,
             ry: 0.0,
@@ -907,7 +1109,7 @@ impl<'a> ActivityLayoutContext<'a> {
                 y + PARTITION_TAB_H,
             ),
             fill: "none".into(),
-            stroke: "#000000".into(),
+            stroke: self.theme.partition_border_color().into(),
             stroke_width: 1.5,
             dashed: false,
         }));
@@ -919,13 +1121,27 @@ impl<'a> ActivityLayoutContext<'a> {
             content: partition.name.clone(),
             font_size: PARTITION_FONT_SIZE,
             font_family: FONT_FAMILY.into(),
-            fill: TEXT_COLOR.into(),
+            fill: self.theme.activity_text_color().into(),
             anchor: TextAnchor::Start,
             bold: false,
         }));
 
+        // Entry: the connector from outside stops at the frame; continue it
+        // through the frame with the arrowhead on the first inner element.
         let inner_y = y + PARTITION_TAB_H + PARTITION_INNER_TOP;
-        self.draw_elements(&partition.elements, center_x, inner_y);
+        self.draw_down_arrow(center_x, y, inner_y, None);
+        let inner_end = self.draw_elements(&partition.elements, center_x, inner_y);
+
+        // Exit: plain line from the last inner element to the frame bottom,
+        // where the outer connector picks up.
+        self.primitives.push(Primitive::Line(Line {
+            x1: center_x,
+            y1: inner_end,
+            x2: center_x,
+            y2: y + h,
+            stroke: self.theme.activity_edge_color().into(),
+            stroke_width: 1.0,
+        }));
 
         y + h
     }
@@ -946,9 +1162,9 @@ impl<'a> ActivityLayoutContext<'a> {
             y,
             width: w,
             height: h,
-            fill: NOTE_FILL.into(),
-            stroke: SHAPE_STROKE.into(),
-            stroke_width: SHAPE_STROKE_W,
+            fill: self.theme.activity_note_fill().into(),
+            stroke: self.theme.activity_shape_stroke().into(),
+            stroke_width: self.theme.activity_shape_stroke_width(),
             rx: 0.0,
             ry: 0.0,
         }));
@@ -959,7 +1175,7 @@ impl<'a> ActivityLayoutContext<'a> {
             content: note.text.clone(),
             font_size: FONT_SIZE,
             font_family: FONT_FAMILY.into(),
-            fill: TEXT_COLOR.into(),
+            fill: self.theme.activity_text_color().into(),
             anchor: TextAnchor::Start,
             bold: false,
         }));
@@ -970,7 +1186,7 @@ impl<'a> ActivityLayoutContext<'a> {
     fn draw_filled_circle(&mut self, cx: f32, cy: f32, r: f32) {
         self.primitives.push(Primitive::Path(Path {
             d: circle_path(cx, cy, r),
-            fill: START_STOP_COLOR.into(),
+            fill: self.theme.activity_start_stop_color().into(),
             stroke: "none".into(),
             stroke_width: 0.0,
             dashed: false,
@@ -982,14 +1198,14 @@ impl<'a> ActivityLayoutContext<'a> {
         self.primitives.push(Primitive::Path(Path {
             d: circle_path(cx, cy, STOP_OUTER_RADIUS),
             fill: "none".into(),
-            stroke: START_STOP_COLOR.into(),
+            stroke: self.theme.activity_start_stop_color().into(),
             stroke_width: 1.0,
             dashed: false,
         }));
         // Inner filled circle
         self.primitives.push(Primitive::Path(Path {
             d: circle_path(cx, cy, STOP_INNER_RADIUS),
-            fill: START_STOP_COLOR.into(),
+            fill: self.theme.activity_start_stop_color().into(),
             stroke: "none".into(),
             stroke_width: 0.0,
             dashed: false,
@@ -1008,9 +1224,9 @@ impl<'a> ActivityLayoutContext<'a> {
                 (cx - half_w, cy + HEX_HALF_H),
                 (cx - half_w - HEX_EXTEND, cy),
             ],
-            fill: SHAPE_FILL.into(),
-            stroke: SHAPE_STROKE.into(),
-            stroke_width: SHAPE_STROKE_W,
+            fill: self.theme.activity_shape_fill().into(),
+            stroke: self.theme.activity_shape_stroke().into(),
+            stroke_width: self.theme.activity_shape_stroke_width(),
         }));
 
         if !text.is_empty() {
@@ -1020,7 +1236,7 @@ impl<'a> ActivityLayoutContext<'a> {
                 content: text.to_string(),
                 font_size: LABEL_FONT_SIZE,
                 font_family: FONT_FAMILY.into(),
-                fill: TEXT_COLOR.into(),
+                fill: self.theme.activity_text_color().into(),
                 anchor: TextAnchor::Middle,
                 bold: false,
             }));
@@ -1036,9 +1252,9 @@ impl<'a> ActivityLayoutContext<'a> {
                 (cx, cy + MERGE_HALF),
                 (cx - MERGE_HALF, cy),
             ],
-            fill: SHAPE_FILL.into(),
-            stroke: SHAPE_STROKE.into(),
-            stroke_width: SHAPE_STROKE_W,
+            fill: self.theme.activity_shape_fill().into(),
+            stroke: self.theme.activity_shape_stroke().into(),
+            stroke_width: self.theme.activity_shape_stroke_width(),
         }));
     }
 
@@ -1050,7 +1266,7 @@ impl<'a> ActivityLayoutContext<'a> {
             content: text.to_string(),
             font_size: LABEL_FONT_SIZE,
             font_family: FONT_FAMILY.into(),
-            fill: TEXT_COLOR.into(),
+            fill: self.theme.activity_text_color().into(),
             anchor,
             bold: false,
         }));
@@ -1062,7 +1278,7 @@ impl<'a> ActivityLayoutContext<'a> {
             y1,
             x2: x,
             y2,
-            stroke: EDGE_COLOR.into(),
+            stroke: self.theme.activity_edge_color().into(),
             stroke_width: 1.0,
             head: ArrowHeadStyle::Filled,
             dashed: false,
@@ -1075,43 +1291,103 @@ impl<'a> ActivityLayoutContext<'a> {
                 content: text.to_string(),
                 font_size: LABEL_FONT_SIZE,
                 font_family: FONT_FAMILY.into(),
-                fill: TEXT_COLOR.into(),
+                fill: self.theme.activity_text_color().into(),
                 anchor: TextAnchor::Start,
                 bold: false,
             }));
         }
     }
 
-    /// Edge leaving a condition hexagon: horizontal from the side vertex
-    /// (x1, y1), then vertical down into the branch top at (x2, y2).
-    fn draw_branch_edge_out(&mut self, x1: f32, y1: f32, x2: f32, y2: f32) {
-        if (x1 - x2).abs() < 0.5 {
-            self.draw_down_arrow(x1, y1, y2, None);
+    /// Edge leaving a condition hexagon at (hex_cx, hex_cy) with half width
+    /// `hex_half_w`, into the branch top at (target_x, target_y).
+    ///
+    /// Aligned branches leave from the bottom vertex; branches beyond the
+    /// side vertices leave horizontally from them. Targets that fall inside
+    /// the hexagon's width take a small elbow below the bottom vertex so the
+    /// line never crosses the shape.
+    fn draw_branch_edge_out(
+        &mut self,
+        hex_cx: f32,
+        hex_cy: f32,
+        hex_half_w: f32,
+        target_x: f32,
+        target_y: f32,
+    ) {
+        let dx = target_x - hex_cx;
+        let hex_bottom = hex_cy + HEX_HALF_H;
+        if dx.abs() < 0.5 {
+            self.draw_down_arrow(hex_cx, hex_bottom, target_y, None);
             return;
         }
-        self.primitives.push(Primitive::Path(Path {
-            d: format!("M {},{} L {},{} L {},{}", x1, y1, x2, y1, x2, y2),
-            fill: "none".into(),
-            stroke: EDGE_COLOR.into(),
-            stroke_width: 1.0,
-            dashed: false,
-        }));
+        if dx.abs() <= hex_half_w + 12.0 {
+            let elbow_y = hex_bottom + 6.0;
+            self.primitives.push(Primitive::Path(Path {
+                d: format!(
+                    "M {},{} L {},{} L {},{} L {},{}",
+                    hex_cx, hex_bottom, hex_cx, elbow_y, target_x, elbow_y, target_x, target_y,
+                ),
+                fill: "none".into(),
+                stroke: self.theme.activity_edge_color().into(),
+                stroke_width: 1.0,
+                dashed: false,
+            }));
+        } else {
+            let vertex_x = if dx < 0.0 {
+                hex_cx - hex_half_w
+            } else {
+                hex_cx + hex_half_w
+            };
+            self.primitives.push(Primitive::Path(Path {
+                d: format!(
+                    "M {},{} L {},{} L {},{}",
+                    vertex_x, hex_cy, target_x, hex_cy, target_x, target_y,
+                ),
+                fill: "none".into(),
+                stroke: self.theme.activity_edge_color().into(),
+                stroke_width: 1.0,
+                dashed: false,
+            }));
+        }
         self.primitives.push(Primitive::Polygon(Polygon {
-            points: concave_head(x2, y2, 0.0, 1.0),
-            fill: EDGE_COLOR.into(),
+            points: concave_head(target_x, target_y, 0.0, 1.0),
+            fill: self.theme.activity_edge_color().into(),
             stroke: "none".into(),
             stroke_width: 0.0,
         }));
     }
 
-    /// Edge entering a merge diamond: vertical from the branch bottom (x1, y1)
-    /// down to the diamond's center line, then horizontal into its side vertex.
+    /// Edge entering a merge diamond: vertical from the branch bottom (x1, y1),
+    /// then into the nearest vertex. Sources close to the diamond's center
+    /// take a small elbow into the top vertex so the line never crosses the
+    /// shape; farther sources enter a side vertex horizontally.
     fn draw_branch_edge_in(&mut self, x1: f32, y1: f32, merge_cx: f32, merge_cy: f32) {
-        if (x1 - merge_cx).abs() < 0.5 {
-            self.draw_down_arrow(x1, y1, merge_cy - MERGE_HALF, None);
+        let dx = x1 - merge_cx;
+        let merge_top = merge_cy - MERGE_HALF;
+        if dx.abs() < 0.5 {
+            self.draw_down_arrow(x1, y1, merge_top, None);
             return;
         }
-        let (target_x, dir) = if x1 < merge_cx {
+        if dx.abs() <= MERGE_HALF + 12.0 {
+            let elbow_y = merge_top - 6.0;
+            self.primitives.push(Primitive::Path(Path {
+                d: format!(
+                    "M {},{} L {},{} L {},{} L {},{}",
+                    x1, y1, x1, elbow_y, merge_cx, elbow_y, merge_cx, merge_top,
+                ),
+                fill: "none".into(),
+                stroke: self.theme.activity_edge_color().into(),
+                stroke_width: 1.0,
+                dashed: false,
+            }));
+            self.primitives.push(Primitive::Polygon(Polygon {
+                points: concave_head(merge_cx, merge_top, 0.0, 1.0),
+                fill: self.theme.activity_edge_color().into(),
+                stroke: "none".into(),
+                stroke_width: 0.0,
+            }));
+            return;
+        }
+        let (target_x, dir) = if dx < 0.0 {
             (merge_cx - MERGE_HALF, 1.0)
         } else {
             (merge_cx + MERGE_HALF, -1.0)
@@ -1122,13 +1398,13 @@ impl<'a> ActivityLayoutContext<'a> {
                 x1, y1, x1, merge_cy, target_x, merge_cy
             ),
             fill: "none".into(),
-            stroke: EDGE_COLOR.into(),
+            stroke: self.theme.activity_edge_color().into(),
             stroke_width: 1.0,
             dashed: false,
         }));
         self.primitives.push(Primitive::Polygon(Polygon {
             points: concave_head(target_x, merge_cy, dir, 0.0),
-            fill: EDGE_COLOR.into(),
+            fill: self.theme.activity_edge_color().into(),
             stroke: "none".into(),
             stroke_width: 0.0,
         }));
@@ -1141,7 +1417,7 @@ impl<'a> ActivityLayoutContext<'a> {
             content: "X".to_string(),
             font_size: 16.0,
             font_family: FONT_FAMILY.into(),
-            fill: EDGE_COLOR.into(),
+            fill: self.theme.activity_edge_color().into(),
             anchor: TextAnchor::Middle,
             bold: false,
         }));
@@ -1303,7 +1579,7 @@ mod tests {
     fn test_activity_has_start_circle() {
         let laid_out = layout_from_text("start\n:Hello;\nstop");
         let has_filled_circle = laid_out.primitives.iter().any(|p| {
-            matches!(p, Primitive::Path(path) if path.fill == START_STOP_COLOR && path.d.contains('a'))
+            matches!(p, Primitive::Path(path) if path.fill == "#222222" && path.d.contains('a'))
         });
         assert!(has_filled_circle, "expected start circle");
     }
@@ -1314,7 +1590,7 @@ mod tests {
         let has_rounded_rect = laid_out
             .primitives
             .iter()
-            .any(|p| matches!(p, Primitive::Rect(r) if r.rx > 0.0 && r.fill == SHAPE_FILL));
+            .any(|p| matches!(p, Primitive::Rect(r) if r.rx > 0.0 && r.fill == "#F1F1F1"));
         assert!(has_rounded_rect, "expected rounded action rect");
     }
 
@@ -1334,10 +1610,10 @@ mod tests {
             layout_from_text("start\nif (ok?) then (yes)\n:A;\nelse (no)\n:B;\nendif\nstop");
         // Condition hexagon (6 points) and merge diamond (4 points)
         let hexagon_count = laid_out.primitives.iter().filter(|p| {
-            matches!(p, Primitive::Polygon(poly) if poly.points.len() == 6 && poly.fill == SHAPE_FILL)
+            matches!(p, Primitive::Polygon(poly) if poly.points.len() == 6 && poly.fill == "#F1F1F1")
         }).count();
         let diamond_count = laid_out.primitives.iter().filter(|p| {
-            matches!(p, Primitive::Polygon(poly) if poly.points.len() == 4 && poly.fill == SHAPE_FILL)
+            matches!(p, Primitive::Polygon(poly) if poly.points.len() == 4 && poly.fill == "#F1F1F1")
         }).count();
         assert_eq!(hexagon_count, 1, "expected 1 condition hexagon");
         assert_eq!(diamond_count, 1, "expected 1 merge diamond");
@@ -1359,7 +1635,7 @@ mod tests {
         let bar_count = laid_out
             .primitives
             .iter()
-            .filter(|p| matches!(p, Primitive::Rect(r) if r.fill == START_STOP_COLOR))
+            .filter(|p| matches!(p, Primitive::Rect(r) if r.fill == "#222222"))
             .count();
         assert_eq!(bar_count, 2, "expected 2 fork bars");
     }

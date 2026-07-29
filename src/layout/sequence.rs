@@ -14,6 +14,8 @@ const MESSAGE_SPACING: f32 = 30.0;
 const NOTE_PADDING: f32 = 5.0;
 const NOTE_MARGIN: f32 = 5.0;
 const NOTE_FOLD: f32 = 10.0;
+/// Gap between the previous row and the top of a note.
+const NOTE_TOP_GAP: f32 = 13.0;
 const GROUP_PADDING: f32 = 8.0;
 const GROUP_LABEL_HEIGHT: f32 = 17.5;
 const GROUP_TOP_MARGIN: f32 = 15.0;
@@ -39,14 +41,18 @@ const COLLECTIONS_OFFSET: f32 = 4.0;
 const DIAGRAM_MARGIN: f32 = 10.0;
 const TITLE_MARGIN: f32 = 10.0;
 
-/// Layout a parsed sequence diagram into primitives with computed positions.
+/// Layout a parsed sequence diagram into primitives with the default theme.
 pub fn layout(diagram: &SequenceDiagram) -> LaidOutDiagram {
-    let theme = DefaultTheme;
+    layout_with_theme(diagram, &DefaultTheme)
+}
+
+/// Layout a parsed sequence diagram into primitives with the given theme.
+pub fn layout_with_theme(diagram: &SequenceDiagram, theme: &dyn Theme) -> LaidOutDiagram {
     let measurer = TextMeasurer::new(theme.font_size());
     // Used for both the title and participant labels (both 14px).
     let title_measurer = TextMeasurer::new(theme.participant_font_size());
 
-    let mut ctx = LayoutContext::new(&theme, &measurer, &title_measurer);
+    let mut ctx = LayoutContext::new(theme, &measurer, &title_measurer);
     ctx.layout(diagram)
 }
 
@@ -73,11 +79,14 @@ struct LayoutContext<'a> {
     fg_primitives: Vec<Primitive>,
     y_cursor: f32,
     auto_number: Option<u32>,
+    auto_number_step: u32,
+    /// The (from, to) of the most recent message, for `activate`/`return`.
+    last_message: Option<(String, String)>,
     /// Rightmost extent of content that sticks out past the participants
     /// (self-message loops, notes), used to widen the diagram.
     max_right: f32,
-    /// Currently open activations: (participant name, start y).
-    active_participants: Vec<(String, f32)>,
+    /// Currently open activations: (participant name, start y, activator).
+    active_participants: Vec<(String, f32, Option<String>)>,
     /// Finished activations: (participant name, start y, end y).
     finished_activations: Vec<(String, f32, f32)>,
 }
@@ -98,6 +107,8 @@ impl<'a> LayoutContext<'a> {
             fg_primitives: Vec::new(),
             y_cursor: DIAGRAM_MARGIN,
             auto_number: None,
+            auto_number_step: 1,
+            last_message: None,
             max_right: 0.0,
             active_participants: Vec::new(),
             finished_activations: Vec::new(),
@@ -109,9 +120,22 @@ impl<'a> LayoutContext<'a> {
         self.collect_participants(diagram);
 
         // Position participants horizontally, spacing them out enough for
-        // message labels between each pair.
+        // message labels between each pair. Group frames extend 10px past the
+        // outer participant boxes, so reserve room for them on the left.
+        let has_group = diagram
+            .elements
+            .iter()
+            .any(|e| matches!(e, SequenceElement::Group(_)));
         let constraints = self.gather_spacing_constraints(&diagram.elements);
-        self.position_participants(&constraints);
+        let base_extra = if has_group { 10.0 } else { 0.0 };
+        self.position_participants(&constraints, base_extra);
+
+        // Notes hanging left of the first participant would be clipped;
+        // re-position everything with enough extra left margin for them.
+        let note_min = self.min_note_x(&diagram.elements);
+        if note_min < DIAGRAM_MARGIN {
+            self.position_participants(&constraints, base_extra + DIAGRAM_MARGIN - note_min);
+        }
 
         // Draw title if present
         if let Some(title) = &diagram.title {
@@ -130,18 +154,23 @@ impl<'a> LayoutContext<'a> {
 
         self.y_cursor += PADDING;
 
-        // Draw participant tails (bottom row)
+        // Draw participant tails (bottom row) unless `hide footbox`
         let bottom_box_y = self.y_cursor;
-        self.draw_participant_boxes(bottom_box_y, true);
-        self.y_cursor += self.head_row_height() + DIAGRAM_MARGIN;
+        if diagram.hide_footbox {
+            self.y_cursor += DIAGRAM_MARGIN;
+        } else {
+            self.draw_participant_boxes(bottom_box_y, true);
+            self.y_cursor += self.head_row_height() + DIAGRAM_MARGIN;
+        }
 
         // Draw lifelines (from bottom of top box to top of bottom box)
         self.draw_lifelines(lifeline_start_y, bottom_box_y);
 
         // Close any activations left open, then draw all activation bars
         // (above the lifelines, below messages).
-        let open: Vec<(String, f32)> = std::mem::take(&mut self.active_participants);
-        for (name, start_y) in open {
+        let open: Vec<(String, f32, Option<String>)> =
+            std::mem::take(&mut self.active_participants);
+        for (name, start_y, _) in open {
             self.finished_activations
                 .push((name, start_y, bottom_box_y));
         }
@@ -284,7 +313,7 @@ impl<'a> LayoutContext<'a> {
         }
     }
 
-    fn position_participants(&mut self, constraints: &[(usize, usize, f32)]) {
+    fn position_participants(&mut self, constraints: &[(usize, usize, f32)], left_extra: f32) {
         let box_height = self.participant_box_height();
         let n = self.participants.len();
         let mut centers = vec![0.0f32; n];
@@ -292,7 +321,7 @@ impl<'a> LayoutContext<'a> {
         for i in 0..n {
             let w = self.participants[i].box_width;
             let mut x = if i == 0 {
-                DIAGRAM_MARGIN + w / 2.0
+                DIAGRAM_MARGIN + left_extra + w / 2.0
             } else {
                 let prev_w = self.participants[i - 1].box_width;
                 centers[i - 1] + prev_w / 2.0 + PARTICIPANT_MARGIN + w / 2.0
@@ -685,21 +714,29 @@ impl<'a> LayoutContext<'a> {
                 SequenceElement::Activate(name) => {
                     // The bar starts at the message line that activated it,
                     // which is where the cursor sits right after a message.
-                    self.active_participants.push((name.clone(), self.y_cursor));
+                    let activator = self
+                        .last_message
+                        .as_ref()
+                        .filter(|(_, to)| to == name)
+                        .map(|(from, _)| from.clone());
+                    self.active_participants
+                        .push((name.clone(), self.y_cursor, activator));
                 }
                 SequenceElement::Deactivate(name) => {
                     if let Some(pos) = self
                         .active_participants
                         .iter()
-                        .rposition(|(n, _)| n == name)
+                        .rposition(|(n, _, _)| n == name)
                     {
-                        let (n, start_y) = self.active_participants.remove(pos);
+                        let (n, start_y, _) = self.active_participants.remove(pos);
                         self.finished_activations.push((n, start_y, self.y_cursor));
                     }
                 }
                 SequenceElement::AutoNumber(config) => {
                     self.auto_number = Some(config.start.unwrap_or(1));
+                    self.auto_number_step = config.increment.unwrap_or(1);
                 }
+                SequenceElement::Return(label) => self.layout_return(label),
                 SequenceElement::Delay(label) => self.layout_delay(label),
                 SequenceElement::Space(n) => {
                     self.y_cursor += n.unwrap_or(15) as f32;
@@ -711,7 +748,7 @@ impl<'a> LayoutContext<'a> {
 
     /// Whether `name` currently has an open activation bar.
     fn is_active(&self, name: &str) -> bool {
-        self.active_participants.iter().any(|(n, _)| n == name)
+        self.active_participants.iter().any(|(n, _, _)| n == name)
     }
 
     fn layout_message(&mut self, msg: &Message, pending_activations: &[String]) {
@@ -722,15 +759,17 @@ impl<'a> LayoutContext<'a> {
         // Bars activated by this message start at its line, and the arrow
         // already stops at the new bar's edge.
         for name in pending_activations {
-            self.active_participants.push((name.clone(), y));
+            self.active_participants
+                .push((name.clone(), y, Some(msg.from.clone())));
         }
 
         let mut label = msg.label.clone();
         if let Some(ref mut num) = self.auto_number {
             label = format!("{} {}", num, label);
-            *num += 1;
+            *num += self.auto_number_step;
         }
 
+        self.last_message = Some((msg.from.clone(), msg.to.clone()));
         if msg.is_self_referencing {
             self.layout_self_message(msg, &label, y);
             self.y_cursor = y + SELF_MSG_HEIGHT;
@@ -738,6 +777,43 @@ impl<'a> LayoutContext<'a> {
             self.layout_normal_message(msg, &label, y);
             self.y_cursor = y;
         }
+    }
+
+    /// `return <label>`: reply from the most recently activated participant to
+    /// its activator, closing that activation at this line.
+    fn layout_return(&mut self, label: &str) {
+        let Some((callee, start_y, activator)) = self.active_participants.pop() else {
+            return;
+        };
+        let y = self.y_cursor + MESSAGE_SPACING;
+
+        let mut label = label.to_string();
+        if let Some(ref mut num) = self.auto_number {
+            label = format!("{} {}", num, label);
+            *num += self.auto_number_step;
+        }
+
+        if let Some(activator) = activator {
+            let msg = Message {
+                from: callee.clone(),
+                to: activator,
+                label: label.clone(),
+                arrow: ArrowStyle {
+                    line: LineStyle::Dashed,
+                    head: ArrowHead::Filled,
+                },
+                is_self_referencing: false,
+            };
+            // The callee is still active while drawing, so the line leaves
+            // from its bar edge.
+            self.active_participants
+                .push((callee.clone(), start_y, None));
+            self.layout_normal_message(&msg, &label, y);
+            self.active_participants.pop();
+        }
+
+        self.finished_activations.push((callee, start_y, y));
+        self.y_cursor = y;
     }
 
     fn layout_normal_message(&mut self, msg: &Message, label: &str, y: f32) {
@@ -859,24 +935,17 @@ impl<'a> LayoutContext<'a> {
         self.max_right = self.max_right.max(x_right);
     }
 
-    fn layout_note(&mut self, note: &Note) {
+    /// Horizontal placement of a note: (left x, width). Depends only on the
+    /// participant positions, so it can be evaluated before the y-layout pass.
+    fn note_x_width(&self, note: &Note) -> (f32, f32) {
         let mut note_width =
             self.measurer.measure_multiline_width(&note.text) + NOTE_PADDING * 2.0 + NOTE_FOLD;
-        let note_height = self.measurer.measure_multiline_height(&note.text) + NOTE_PADDING * 2.0;
-
-        let (x, y) = match &note.position {
-            NotePosition::RightOf(name) => {
-                let px = self.participant_x(name);
-                (px + NOTE_MARGIN, self.y_cursor)
-            }
-            NotePosition::LeftOf(name) => {
-                let px = self.participant_x(name);
-                (px - NOTE_MARGIN - note_width, self.y_cursor)
-            }
+        let x = match &note.position {
+            NotePosition::RightOf(name) => self.participant_x(name) + NOTE_MARGIN,
+            NotePosition::LeftOf(name) => self.participant_x(name) - NOTE_MARGIN - note_width,
             NotePosition::Over(names) => {
                 if names.len() == 1 {
-                    let px = self.participant_x(&names[0]);
-                    (px - note_width / 2.0, self.y_cursor)
+                    self.participant_x(&names[0]) - note_width / 2.0
                 } else {
                     // Span all named lifelines, extending 10px past each side
                     let min_x = names
@@ -888,11 +957,37 @@ impl<'a> LayoutContext<'a> {
                         .map(|n| self.participant_x(n))
                         .fold(f32::MIN, f32::max);
                     note_width = note_width.max(max_x - min_x + 20.0);
-                    let center = (min_x + max_x) / 2.0;
-                    (center - note_width / 2.0, self.y_cursor)
+                    (min_x + max_x) / 2.0 - note_width / 2.0
                 }
             }
         };
+        (x, note_width)
+    }
+
+    /// Leftmost x any note reaches, for reserving left margin.
+    fn min_note_x(&self, elements: &[SequenceElement]) -> f32 {
+        let mut min_x = f32::MAX;
+        for element in elements {
+            match element {
+                SequenceElement::Note(note) => {
+                    min_x = min_x.min(self.note_x_width(note).0);
+                }
+                SequenceElement::Group(group) => {
+                    min_x = min_x.min(self.min_note_x(&group.elements));
+                    for else_block in &group.else_blocks {
+                        min_x = min_x.min(self.min_note_x(&else_block.elements));
+                    }
+                }
+                _ => {}
+            }
+        }
+        min_x
+    }
+
+    fn layout_note(&mut self, note: &Note) {
+        let (x, note_width) = self.note_x_width(note);
+        let note_height = self.measurer.measure_multiline_height(&note.text) + NOTE_PADDING * 2.0;
+        let y = self.y_cursor + NOTE_TOP_GAP;
 
         // Note body with a folded top-right corner (PlantUML shape):
         // outline with the corner cut off, plus the fold triangle.
@@ -947,7 +1042,7 @@ impl<'a> LayoutContext<'a> {
             anchor: TextAnchor::Start,
         }));
 
-        self.y_cursor += note_height + PADDING;
+        self.y_cursor = y + note_height;
         self.max_right = self.max_right.max(x + note_width);
     }
 
@@ -1001,6 +1096,8 @@ impl<'a> LayoutContext<'a> {
                     + 10.0,
             )
         };
+
+        self.max_right = self.max_right.max(max_x + 2.0);
 
         // Group frame
         self.group_primitives.push(Primitive::Rect(Rect {

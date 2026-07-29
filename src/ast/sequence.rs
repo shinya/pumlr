@@ -2,6 +2,8 @@
 #[derive(Debug, Clone)]
 pub struct SequenceDiagram {
     pub title: Option<String>,
+    /// `hide footbox` — omit the bottom participant row.
+    pub hide_footbox: bool,
     pub elements: Vec<SequenceElement>,
 }
 
@@ -18,6 +20,9 @@ pub enum SequenceElement {
     AutoNumber(AutoNumberConfig),
     Delay(Option<String>),
     Space(Option<u32>),
+    /// `return <label>` — reply to whoever activated the current participant,
+    /// closing its activation.
+    Return(String),
 }
 
 /// A participant (actor, boundary, etc.).
@@ -120,4 +125,5 @@ pub struct Separator {
 #[derive(Debug, Clone)]
 pub struct AutoNumberConfig {
     pub start: Option<u32>,
+    pub increment: Option<u32>,
 }

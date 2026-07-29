@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2021"
 description = "A pure Rust PlantUML renderer — generates SVG from PlantUML text without Java or Graphviz"
 license = "MIT"
+readme = "README.md"
+keywords = ["plantuml", "uml", "diagram", "svg", "renderer"]
+categories = ["visualization", "rendering", "parser-implementations"]
 
 [dependencies]
 nom = "8"

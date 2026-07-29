@@ -1,32 +1,45 @@
-# plantuml-rust
+# pumlr
 
-PlantUML text to SVG renderer written in pure Rust. No Java, no Graphviz, no external dependencies.
+A pure-Rust PlantUML renderer — generates SVG from PlantUML text without Java or Graphviz.
+
+The rendering is developed against the output of PlantUML 1.2026 (Java) as the
+reference: every supported construct is compared side-by-side with the real
+PlantUML output and matched in topology and styling (see *Development loop*
+below). The default theme reproduces PlantUML's current default look; the
+pre-2023 classic look (pale yellow / dark red) is available as the `classic`
+theme.
 
 ## Status
 
-Early development. Sequence diagrams are supported.
+Sequence diagrams and activity diagrams are supported.
 
-### Supported features (Sequence Diagram)
+### Sequence diagrams
 
-- Participant types: `participant`, `actor`, `boundary`, `control`, `entity`, `database`, `collections`, `queue`
-- Aliases: `participant "Long Name" as alias`
-- Arrows: `->`, `-->`, `->>`, `-->>` and left-facing variants
-- Self-referencing messages
+- Participant types with icons: `participant`, `actor` (stick figure),
+  `boundary`, `control`, `entity`, `database` (cylinder), `collections`,
+  `queue` — with aliases (`participant "Long Name" as alias`)
+- Arrows: `->`, `-->`, `->>`, `-->>` and left-facing variants; self-messages
+- Activation bars: `activate` / `deactivate` / `return` (reply to the caller,
+  arrows stop at bar edges)
 - Groups: `alt/else`, `loop`, `opt`, `break`, `par`, `critical`, `group`
-- Notes: `note left of`, `note right of`, `note over` (single-line and multi-line)
-- `activate` / `deactivate`
-- `autonumber`
-- Separators (`== label ==`), delays (`...`), spacing (`|||`, `||N||`)
-- Title
-- Comments (single-line `'` and block `/' ... '/`)
+- Notes: `note left of`, `note right of`, `note over A, B` (spanning)
+- `autonumber [start [increment]]`, `hide footbox`
+- Separators (`== label ==`), delays (`...`), spacing (`|||`, `||N||`), title
+
+### Activity diagrams
+
+- Actions `:text;`, `start` / `stop` / `end` / `detach`
+- `if / then / elseif / else / endif` (elseif renders as a PlantUML-style
+  hexagon chain), `switch / case / endswitch`
+- `while / endwhile`, `repeat / backward / repeat while`
+- `fork / fork again / end fork`, `partition { ... }`
+- Edge labels (`-> label;`), notes, title
 
 ## Usage
 
-Add to `Cargo.toml`:
-
 ```toml
 [dependencies]
-plantuml-rust = { path = "../plantuml-rust" }
+pumlr = "0.1"
 ```
 
 ```rust
@@ -35,40 +48,56 @@ Alice -> Bob : Hello
 Bob --> Alice : Hi
 @enduml"#;
 
-let svg = plantuml_rust::render_svg(input).unwrap();
-// svg is a String containing valid SVG XML
+let svg = pumlr::render_svg(input).unwrap();
+
+// Or pick a theme:
+let options = pumlr::RenderOptions {
+    theme: Some("classic".into()),
+    ..Default::default()
+};
+let svg = pumlr::render_svg_with_options(input, &options).unwrap();
 ```
 
-## Development
+Command line (via the bundled example):
 
 ```bash
-# Run tests
-cargo test
+cargo run --example render -- diagram.puml diagram.svg
+```
 
-# Lint
-cargo clippy
+## Development loop
 
-# Generate a sample SVG
-cargo run --example generate_svg
-open output.svg
+The project is developed by comparing against the Java PlantUML output:
+
+```bash
+# Requires: plantuml (Java) and rsvg-convert on PATH
+scripts/compare.sh                  # render all fixtures with both engines
+scripts/compare.sh simple_activity  # or a single fixture
+open compare/                       # *_ref.png (Java) vs *_pumlr.png (this crate)
+```
+
+Style values (colors, stroke widths, corner radii, spacings) are extracted
+from the reference SVG output and recorded in `SPEC.md`.
+
+```bash
+cargo test    # unit + integration tests
 ```
 
 ### Project structure
 
 ```
 src/
-  lib.rs              # Public API: render_svg(), detect_diagram_type()
+  lib.rs               # Public API: render_svg(), render_svg_with_options()
   preprocess.rs        # @start/@end detection, comment stripping
-  parser/sequence.rs   # PlantUML text -> AST
-  ast/sequence.rs      # AST type definitions
-  layout/sequence.rs   # AST -> positioned primitives
-  layout/text_measure.rs
+  parser/              # PlantUML text -> AST (sequence.rs, activity.rs)
+  ast/                 # AST type definitions
+  layout/              # AST -> positioned primitives (+ text_measure.rs)
   render/svg.rs        # Primitives -> SVG string
-  render/primitives.rs # Drawing primitives (Rect, Line, Arrow, etc.)
-  theme/               # Theme trait + default theme
+  render/primitives.rs # Drawing primitives (Rect, Line, Arrow, ...)
+  theme/               # Theme trait, default (PlantUML 1.2026) and classic
 tests/
   integration_test.rs  # End-to-end tests
-  fixtures/            # Sample .puml files
+  fixtures/            # .puml files used by tests and scripts/compare.sh
+scripts/compare.sh     # Side-by-side comparison against Java PlantUML
 ```
 
 ## License

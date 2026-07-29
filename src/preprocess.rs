@@ -17,10 +17,7 @@ pub struct PreprocessedInput {
 pub fn preprocess(input: &str) -> Result<PreprocessedInput, PlantUmlError> {
     let (diagram_type, start_idx, end_idx) = find_diagram_bounds(input)?;
     let body = extract_body(input, start_idx, end_idx);
-    Ok(PreprocessedInput {
-        diagram_type,
-        body,
-    })
+    Ok(PreprocessedInput { diagram_type, body })
 }
 
 /// Detect the diagram type from the input text without full preprocessing.
@@ -186,8 +183,14 @@ mod tests {
 
     #[test]
     fn test_detect_diagram_type_function() {
-        assert_eq!(detect_diagram_type("@startuml\n"), Some(DiagramType::Sequence));
-        assert_eq!(detect_diagram_type("@startmindmap\n"), Some(DiagramType::MindMap));
+        assert_eq!(
+            detect_diagram_type("@startuml\n"),
+            Some(DiagramType::Sequence)
+        );
+        assert_eq!(
+            detect_diagram_type("@startmindmap\n"),
+            Some(DiagramType::MindMap)
+        );
         assert_eq!(detect_diagram_type("@startwbs\n"), Some(DiagramType::Wbs));
         assert_eq!(detect_diagram_type("hello"), None);
     }

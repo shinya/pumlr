@@ -8,6 +8,7 @@ use crate::error::PlantUmlError;
 pub fn parse(input: &str) -> Result<SequenceDiagram, PlantUmlError> {
     let mut elements = Vec::new();
     let mut title = None;
+    let mut hide_footbox = false;
     let mut line_num = 0;
 
     let mut lines_iter = input.lines().peekable();
@@ -20,9 +21,17 @@ pub fn parse(input: &str) -> Result<SequenceDiagram, PlantUmlError> {
         }
 
         // Title
-        if let Some(t) = trimmed.strip_prefix("title ").or_else(|| trimmed.strip_prefix("title\t"))
+        if let Some(t) = trimmed
+            .strip_prefix("title ")
+            .or_else(|| trimmed.strip_prefix("title\t"))
         {
             title = Some(t.trim().to_string());
+            continue;
+        }
+
+        // hide footbox
+        if trimmed.eq_ignore_ascii_case("hide footbox") {
+            hide_footbox = true;
             continue;
         }
 
@@ -44,20 +53,36 @@ pub fn parse(input: &str) -> Result<SequenceDiagram, PlantUmlError> {
         }
     }
 
-    Ok(SequenceDiagram { title, elements })
+    Ok(SequenceDiagram {
+        title,
+        hide_footbox,
+        elements,
+    })
 }
 
 fn parse_line(line: &str, _line_num: usize) -> Result<Option<SequenceElement>, PlantUmlError> {
-    // autonumber
+    // return <label>
+    if line.eq_ignore_ascii_case("return") {
+        return Ok(Some(SequenceElement::Return(String::new())));
+    }
+    if let Some(rest) = strip_prefix_ci(line, "return ") {
+        return Ok(Some(SequenceElement::Return(rest.trim().to_string())));
+    }
+
+    // autonumber [start [increment]]
     if line.eq_ignore_ascii_case("autonumber") {
         return Ok(Some(SequenceElement::AutoNumber(AutoNumberConfig {
             start: None,
+            increment: None,
         })));
     }
     if let Some(rest) = strip_prefix_ci(line, "autonumber ") {
-        let n = rest.trim().parse::<u32>().ok();
+        let mut nums = rest.split_whitespace().map(|t| t.parse::<u32>().ok());
+        let n = nums.next().flatten();
+        let inc = nums.next().flatten();
         return Ok(Some(SequenceElement::AutoNumber(AutoNumberConfig {
             start: n,
+            increment: inc,
         })));
     }
 
@@ -369,7 +394,10 @@ fn try_parse_single_line_note(line: &str) -> Option<Note> {
     None
 }
 
-fn try_parse_multiline_note<'a, I>(first_line: &str, lines: &mut std::iter::Peekable<I>) -> Option<Note>
+fn try_parse_multiline_note<'a, I>(
+    first_line: &str,
+    lines: &mut std::iter::Peekable<I>,
+) -> Option<Note>
 where
     I: Iterator<Item = &'a str>,
 {
@@ -378,7 +406,11 @@ where
     } else if let Some(rest) = strip_prefix_ci(first_line, "note right of ") {
         Some(NotePosition::RightOf(rest.trim().to_string()))
     } else if let Some(rest) = strip_prefix_ci(first_line, "note over ") {
-        let targets: Vec<String> = rest.trim().split(',').map(|s| s.trim().to_string()).collect();
+        let targets: Vec<String> = rest
+            .trim()
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .collect();
         Some(NotePosition::Over(targets))
     } else {
         None
@@ -520,9 +552,7 @@ where
 // --- Helper functions ---
 
 fn strip_prefix_ci<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
-    if s.len() >= prefix.len()
-        && s[..prefix.len()].eq_ignore_ascii_case(prefix)
-    {
+    if s.len() >= prefix.len() && s[..prefix.len()].eq_ignore_ascii_case(prefix) {
         Some(&s[prefix.len()..])
     } else {
         None
@@ -891,8 +921,14 @@ deactivate Server"#;
     #[test]
     fn test_participant_keyword_names_in_messages() {
         let keywords = [
-            "Participant", "Actor", "Boundary", "Control",
-            "Entity", "Database", "Collections", "Queue",
+            "Participant",
+            "Actor",
+            "Boundary",
+            "Control",
+            "Entity",
+            "Database",
+            "Collections",
+            "Queue",
         ];
         for keyword in &keywords {
             let input = format!("{} -> Server : test", keyword);
@@ -920,14 +956,30 @@ Server --> Client : 200 OK"#;
 
         let diagram = parse(input).unwrap();
 
-        let participants: Vec<_> = diagram.elements.iter().filter_map(|e| {
-            if let SequenceElement::ParticipantDecl(p) = e { Some(p.name.clone()) } else { None }
-        }).collect();
+        let participants: Vec<_> = diagram
+            .elements
+            .iter()
+            .filter_map(|e| {
+                if let SequenceElement::ParticipantDecl(p) = e {
+                    Some(p.name.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
         assert_eq!(participants, vec!["Client", "Server", "Database"]);
 
-        let messages: Vec<_> = diagram.elements.iter().filter_map(|e| {
-            if let SequenceElement::Message(m) = e { Some(m.label.clone()) } else { None }
-        }).collect();
+        let messages: Vec<_> = diagram
+            .elements
+            .iter()
+            .filter_map(|e| {
+                if let SequenceElement::Message(m) = e {
+                    Some(m.label.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
         assert_eq!(messages, vec!["POST /login", "user data", "200 OK"]);
     }
 }

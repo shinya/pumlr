@@ -210,7 +210,10 @@ fn test_render_fixture_full() {
     assert!(svg.contains("Database"));
     // Regression: "Database --> Server : user data" must render as a message, not a participant
     assert!(svg.contains("user data"));
-    assert!(!svg.contains("--&gt;"), "phantom participant '-->' should not appear");
+    assert!(
+        !svg.contains("--&gt;"),
+        "phantom participant '-->' should not appear"
+    );
 }
 
 #[test]
@@ -241,7 +244,11 @@ DB --> Alice : result
 
     // Count participant boxes: should be exactly 2 (Alice, DB) x 2 (top+bottom) = 4
     let participant_fill_count = svg.matches(r##"fill="#E2E2F0""##).count();
-    assert_eq!(participant_fill_count, 4, "expected 4 participant boxes (2 participants x top/bottom), got {}", participant_fill_count);
+    assert_eq!(
+        participant_fill_count, 4,
+        "expected 4 participant boxes (2 participants x top/bottom), got {}",
+        participant_fill_count
+    );
 }
 
 // Regression: complex diagram with database should not create phantom participants
@@ -373,4 +380,60 @@ Alice -> Bob : Hello
     let svg = render_svg(input).unwrap();
     assert!(svg.contains("Alice"));
     assert!(svg.contains("Bob"));
+}
+
+#[test]
+fn test_render_repeat_fixture() {
+    let input = std::fs::read_to_string("tests/fixtures/repeat_activity.puml").unwrap();
+    let svg = render_svg(&input).unwrap();
+    assert!(svg.contains("Process Row"));
+    assert!(svg.contains("Next Row"));
+    assert!(svg.contains("More rows?"));
+    assert!(svg.contains("no"));
+}
+
+#[test]
+fn test_render_return_fixture() {
+    let input = std::fs::read_to_string("tests/fixtures/return_sequence.puml").unwrap();
+    let svg = render_svg(&input).unwrap();
+    // return draws numbered replies; hide footbox drops the bottom row
+    assert!(svg.contains("30 ok"));
+    assert!(svg.contains("40 saved"));
+    let client_count = svg.matches(">Client</text>").count();
+    assert_eq!(
+        client_count, 1,
+        "hide footbox should leave only the top row"
+    );
+}
+
+#[test]
+fn test_render_edge_label_fixture() {
+    let input = std::fs::read_to_string("tests/fixtures/label_activity.puml").unwrap();
+    let svg = render_svg(&input).unwrap();
+    assert!(svg.contains("valid"));
+    assert!(svg.contains("done"));
+}
+
+#[test]
+fn test_classic_theme() {
+    use pumlr::RenderOptions;
+    let options = RenderOptions {
+        theme: Some("classic".to_string()),
+        ..Default::default()
+    };
+
+    let seq =
+        pumlr::render_svg_with_options("@startuml\nAlice -> Bob : Hi\n@enduml", &options).unwrap();
+    assert!(seq.contains("#FEFECE"), "classic participant fill");
+    assert!(seq.contains("#A80036"), "classic stroke color");
+
+    let act = pumlr::render_svg_with_options("@startuml\nstart\n:Work;\nstop\n@enduml", &options)
+        .unwrap();
+    assert!(act.contains("#FEFECE"), "classic action fill");
+    assert!(act.contains("#A80036"), "classic edge color");
+
+    // Default stays on the modern style
+    let modern = pumlr::render_svg("@startuml\nstart\n:Work;\nstop\n@enduml").unwrap();
+    assert!(modern.contains("#F1F1F1"));
+    assert!(!modern.contains("#FEFECE"));
 }

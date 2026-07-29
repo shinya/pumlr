@@ -19,7 +19,18 @@ pub enum ActivityElement {
     Partition(Partition),
     Note(ActivityNote),
     Arrow(ArrowLabel),
+    Repeat(RepeatBlock),
     Detach,
+}
+
+/// `repeat ... [backward :action;] repeat while (cond) is (label)`
+#[derive(Debug, Clone)]
+pub struct RepeatBlock {
+    pub elements: Vec<ActivityElement>,
+    /// `backward :label;` — action drawn on the loop-back rail.
+    pub backward: Option<String>,
+    pub condition: String,
+    pub is_label: String,
 }
 
 /// An action node `:text;`

@@ -91,6 +91,11 @@ where
         return Ok(Some(parse_while(line, lines)?));
     }
 
+    // repeat (loop start) — "repeat while" is the loop end, handled inside
+    if lower == "repeat" {
+        return Ok(Some(parse_repeat(lines)?));
+    }
+
     // fork
     if lower == "fork" {
         return Ok(Some(parse_fork(lines)?));
@@ -267,9 +272,45 @@ where
     }))
 }
 
-fn parse_fork<'a, I>(
-    lines: &mut std::iter::Peekable<I>,
-) -> Result<ActivityElement, PlantUmlError>
+fn parse_repeat<'a, I>(lines: &mut std::iter::Peekable<I>) -> Result<ActivityElement, PlantUmlError>
+where
+    I: Iterator<Item = &'a str>,
+{
+    let mut elements = parse_elements(lines, &["repeat while", "backward"])?;
+
+    // Optional `backward :action;` just before the loop end
+    let mut backward = None;
+    if let Some(next) = lines.peek() {
+        let trimmed = next.trim();
+        if trimmed.to_lowercase().starts_with("backward") {
+            backward = extract_action_label(trimmed["backward".len()..].trim());
+            lines.next();
+            elements.extend(parse_elements(lines, &["repeat while"])?);
+        }
+    }
+
+    // `repeat while (cond) is (label)`
+    let (condition, is_label) = if let Some(end_line) = lines.next() {
+        let condition = extract_paren_after(end_line, "while").unwrap_or_default();
+        let is_label = if let Some(pos) = end_line.to_lowercase().rfind("is") {
+            extract_paren_content(&end_line[pos + 2..]).unwrap_or_default()
+        } else {
+            String::new()
+        };
+        (condition, is_label)
+    } else {
+        (String::new(), String::new())
+    };
+
+    Ok(ActivityElement::Repeat(RepeatBlock {
+        elements,
+        backward,
+        condition,
+        is_label,
+    }))
+}
+
+fn parse_fork<'a, I>(lines: &mut std::iter::Peekable<I>) -> Result<ActivityElement, PlantUmlError>
 where
     I: Iterator<Item = &'a str>,
 {

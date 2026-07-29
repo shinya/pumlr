@@ -1,0 +1,9 @@
+@startuml
+start
+:Validate Input;
+-> valid;
+:Transform;
+-> done;
+:Store;
+stop
+@enduml

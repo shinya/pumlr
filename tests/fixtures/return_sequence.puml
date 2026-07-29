@@ -1,0 +1,15 @@
+@startuml
+hide footbox
+autonumber 10 10
+participant Client
+participant Api
+participant Store
+
+Client -> Api : save(data)
+activate Api
+Api -> Store : write
+activate Store
+return ok
+return saved
+Client -> Api : ping
+@enduml

@@ -1,0 +1,12 @@
+@startuml
+start
+:Fetch Batch;
+repeat
+  :Process Row;
+  :Save Row;
+backward :Next Row;
+repeat while (More rows?) is (yes)
+->no;
+:Close File;
+stop
+@enduml
