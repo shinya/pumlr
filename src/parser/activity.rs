@@ -3,21 +3,37 @@ use crate::error::PlantUmlError;
 
 /// Parse a preprocessed activity diagram body into an AST.
 pub fn parse(input: &str) -> Result<ActivityDiagram, PlantUmlError> {
-    let mut lines_iter = input.lines().peekable();
+    // Pull out the document-level directives, wherever they appear
     let mut title = None;
-
-    // Check for title
-    if let Some(first_line) = lines_iter.peek() {
-        let trimmed = first_line.trim();
+    let mut header = None;
+    let mut footer = None;
+    let mut caption = None;
+    let mut body_lines: Vec<&str> = Vec::new();
+    for line in input.lines() {
+        let trimmed = line.trim();
         if let Some(t) = strip_prefix_ci(trimmed, "title ") {
             title = Some(t.trim().to_string());
-            lines_iter.next();
+        } else if let Some(t) = strip_prefix_ci(trimmed, "header ") {
+            header = Some(t.trim().to_string());
+        } else if let Some(t) = strip_prefix_ci(trimmed, "footer ") {
+            footer = Some(t.trim().to_string());
+        } else if let Some(t) = strip_prefix_ci(trimmed, "caption ") {
+            caption = Some(t.trim().to_string());
+        } else {
+            body_lines.push(line);
         }
     }
 
+    let mut lines_iter = body_lines.into_iter().peekable();
     let elements = parse_elements(&mut lines_iter, &[])?;
 
-    Ok(ActivityDiagram { title, elements })
+    Ok(ActivityDiagram {
+        title,
+        header,
+        footer,
+        caption,
+        elements,
+    })
 }
 
 fn parse_elements<'a, I>(
@@ -76,9 +92,16 @@ where
         return Ok(Some(ActivityElement::Detach));
     }
 
-    // Action: :text;
+    // Action: :text;  (with optional `<<#Color>>` suffix or legacy
+    // `#Color:` prefix)
     if line.starts_with(':') {
-        return Ok(Some(parse_action(line, lines)));
+        return Ok(Some(parse_action(line, lines, None)));
+    }
+    if line.starts_with('#') {
+        if let Some(colon) = line.find(':') {
+            let color = line[..colon].trim().to_string();
+            return Ok(Some(parse_action(&line[colon..], lines, Some(color))));
+        }
     }
 
     // if
@@ -116,6 +139,20 @@ where
         return Ok(Some(parse_note(line, lines)));
     }
 
+    // Swimlane: |Name| or |#color|Name|
+    if line.starts_with('|') && line.ends_with('|') && line.len() > 2 {
+        let name = line
+            .trim_matches('|')
+            .split('|')
+            .next_back()
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if !name.is_empty() {
+            return Ok(Some(ActivityElement::LaneChange(name)));
+        }
+    }
+
     // Arrow label: -> text;
     if let Some(rest) = line.strip_prefix("->") {
         let label = rest.trim().trim_end_matches(';').trim().to_string();
@@ -126,15 +163,27 @@ where
     Ok(None)
 }
 
-fn parse_action<'a, I>(line: &str, lines: &mut std::iter::Peekable<I>) -> ActivityElement
+fn parse_action<'a, I>(
+    line: &str,
+    lines: &mut std::iter::Peekable<I>,
+    prefix_color: Option<String>,
+) -> ActivityElement
 where
     I: Iterator<Item = &'a str>,
 {
+    // Modern color syntax: `:text; <<#Color>>`
+    let (line, color) = match split_action_stereotype_color(line) {
+        Some((body, color)) => (body, Some(color)),
+        None => (line, prefix_color),
+    };
+    let line = &line.to_string()[..];
+
     // :text; on single line
     if let Some(label) = extract_action_label(line) {
         return ActivityElement::Action(Action {
             label,
             shape: ActionShape::Action,
+            color,
         });
     }
 
@@ -157,7 +206,20 @@ where
     ActivityElement::Action(Action {
         label: text.trim().to_string(),
         shape: ActionShape::Action,
+        color,
     })
+}
+
+/// Split `:text; <<#Color>>` into (`:text;`, color token).
+fn split_action_stereotype_color(line: &str) -> Option<(&str, String)> {
+    let rest = line.trim_end();
+    let inner = rest.strip_suffix(">>")?;
+    let open = inner.rfind("<<")?;
+    let token = inner[open + 2..].trim();
+    if !token.starts_with('#') {
+        return None;
+    }
+    Some((inner[..open].trim_end(), token.to_string()))
 }
 
 fn extract_action_label(line: &str) -> Option<String> {

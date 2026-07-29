@@ -38,6 +38,8 @@ const QUEUE_H: f32 = 26.5;
 const QUEUE_CAP: f32 = 5.0;
 // Collections stacked boxes offset
 const COLLECTIONS_OFFSET: f32 = 4.0;
+/// Vertical space reserved for `box` titles above the participant heads.
+const BOX_TITLE_BAND: f32 = 24.0;
 const DIAGRAM_MARGIN: f32 = 10.0;
 const TITLE_MARGIN: f32 = 10.0;
 
@@ -61,6 +63,12 @@ struct ParticipantInfo {
     label: String,
     #[allow(dead_code)]
     kind: ParticipantKind,
+    /// Fill override from `participant Foo #Color`.
+    color: Option<String>,
+    /// Declared with `create`: drawn at its first received message.
+    created: bool,
+    /// Where a created participant's head box ended (lifeline start).
+    materialized_y: Option<f32>,
     x_center: f32,
     box_width: f32,
     box_height: f32,
@@ -71,6 +79,8 @@ struct LayoutContext<'a> {
     measurer: &'a TextMeasurer,
     title_measurer: &'a TextMeasurer,
     participants: Vec<ParticipantInfo>,
+    /// Bottom layer: `box` background panels (behind everything)
+    box_primitives: Vec<Primitive>,
     /// Background layer: lifelines (drawn behind everything)
     bg_primitives: Vec<Primitive>,
     /// Middle layer: group frames (behind messages but above lifelines)
@@ -80,6 +90,7 @@ struct LayoutContext<'a> {
     y_cursor: f32,
     auto_number: Option<u32>,
     auto_number_step: u32,
+    auto_number_format: Option<String>,
     /// The (from, to) of the most recent message, for `activate`/`return`.
     last_message: Option<(String, String)>,
     /// Rightmost extent of content that sticks out past the participants
@@ -102,12 +113,14 @@ impl<'a> LayoutContext<'a> {
             measurer,
             title_measurer,
             participants: Vec::new(),
+            box_primitives: Vec::new(),
             bg_primitives: Vec::new(),
             group_primitives: Vec::new(),
             fg_primitives: Vec::new(),
             y_cursor: DIAGRAM_MARGIN,
             auto_number: None,
             auto_number_step: 1,
+            auto_number_format: None,
             last_message: None,
             max_right: 0.0,
             active_participants: Vec::new(),
@@ -137,9 +150,29 @@ impl<'a> LayoutContext<'a> {
             self.position_participants(&constraints, base_extra + DIAGRAM_MARGIN - note_min);
         }
 
+        // Header: small gray text at the top right
+        if let Some(header) = &diagram.header {
+            self.fg_primitives.push(Primitive::Text(Text {
+                bold: false,
+                x: self.calculate_total_width() - 4.0,
+                y: self.y_cursor + 5.0,
+                content: header.clone(),
+                font_size: 10.0,
+                font_family: self.theme.font_family().to_string(),
+                fill: "#888888".into(),
+                anchor: TextAnchor::End,
+            }));
+            self.y_cursor += 14.0;
+        }
+
         // Draw title if present
         if let Some(title) = &diagram.title {
             self.draw_title(title);
+        }
+
+        // Boxes reserve a title band above the participant heads
+        if !diagram.boxes.is_empty() {
+            self.y_cursor += BOX_TITLE_BAND;
         }
 
         // Draw participant heads (top row); lifelines start at its bottom edge
@@ -193,6 +226,91 @@ impl<'a> LayoutContext<'a> {
             }));
         }
 
+        // Caption (centered) and footer (small gray, centered) at the bottom
+        if let Some(caption) = &diagram.caption {
+            self.fg_primitives.push(Primitive::Text(Text {
+                bold: false,
+                x: self.calculate_total_width() / 2.0,
+                y: self.y_cursor + 6.0,
+                content: caption.clone(),
+                font_size: self.theme.participant_font_size(),
+                font_family: self.theme.font_family().to_string(),
+                fill: "black".into(),
+                anchor: TextAnchor::Middle,
+            }));
+            self.y_cursor += 20.0;
+        }
+        if let Some(footer) = &diagram.footer {
+            self.fg_primitives.push(Primitive::Text(Text {
+                bold: false,
+                x: self.calculate_total_width() / 2.0,
+                y: self.y_cursor + 4.0,
+                content: footer.clone(),
+                font_size: 10.0,
+                font_family: self.theme.font_family().to_string(),
+                fill: "#888888".into(),
+                anchor: TextAnchor::Middle,
+            }));
+            self.y_cursor += 14.0;
+        }
+
+        // Box panels: full-height backgrounds behind their participants
+        let box_bottom = if diagram.hide_footbox {
+            bottom_box_y + 4.0
+        } else {
+            bottom_box_y + self.head_row_height() + 4.0
+        };
+        for pbox in &diagram.boxes {
+            let members: Vec<&ParticipantInfo> = self
+                .participants
+                .iter()
+                .filter(|p| pbox.participants.contains(&p.name))
+                .collect();
+            if members.is_empty() {
+                continue;
+            }
+            let left = members
+                .iter()
+                .map(|p| p.x_center - p.box_width / 2.0)
+                .fold(f32::MAX, f32::min)
+                - 4.0;
+            let right = members
+                .iter()
+                .map(|p| p.x_center + p.box_width / 2.0)
+                .fold(f32::MIN, f32::max)
+                + 4.0;
+            let top = participant_top_y - BOX_TITLE_BAND;
+            let fill = pbox
+                .color
+                .as_deref()
+                .map(crate::theme::resolve_color)
+                .unwrap_or_else(|| "#DDDDDD".to_string());
+            self.box_primitives.push(Primitive::Rect(Rect {
+                x: left,
+                y: top,
+                width: right - left,
+                height: box_bottom - top,
+                fill,
+                stroke: "#181818".into(),
+                stroke_width: 0.5,
+                rx: 0.0,
+                ry: 0.0,
+            }));
+            if !pbox.title.is_empty() {
+                self.box_primitives.push(Primitive::Text(Text {
+                    bold: true,
+                    x: (left + right) / 2.0,
+                    y: top + 13.0,
+                    content: pbox.title.clone(),
+                    font_size: self.theme.font_size(),
+                    font_family: self.theme.font_family().to_string(),
+                    fill: "black".into(),
+                    anchor: TextAnchor::Middle,
+                }));
+            }
+            self.max_right = self.max_right.max(right + 1.0);
+        }
+
         // Calculate total dimensions (content like self-message loops and
         // notes can stick out past the last participant)
         let total_width = self
@@ -202,6 +320,7 @@ impl<'a> LayoutContext<'a> {
 
         // Merge layers: background (lifelines) → groups → foreground (boxes, messages, notes)
         let mut primitives = Vec::new();
+        primitives.append(&mut self.box_primitives);
         primitives.append(&mut self.bg_primitives);
         primitives.append(&mut self.group_primitives);
         primitives.append(&mut self.fg_primitives);
@@ -237,6 +356,9 @@ impl<'a> LayoutContext<'a> {
                         name: p.name.clone(),
                         label,
                         kind: p.kind,
+                        color: p.color.clone(),
+                        created: p.created,
+                        materialized_y: None,
                         x_center: 0.0,
                         box_width,
                         box_height: 0.0,
@@ -261,6 +383,9 @@ impl<'a> LayoutContext<'a> {
                                 name: name.clone(),
                                 label: name.clone(),
                                 kind: ParticipantKind::Participant,
+                                color: None,
+                                created: false,
+                                materialized_y: None,
                                 x_center: 0.0,
                                 box_width,
                                 box_height: 0.0,
@@ -306,6 +431,19 @@ impl<'a> LayoutContext<'a> {
                     self.gather_spacing_constraints_into(&group.elements, constraints);
                     for else_block in &group.else_blocks {
                         self.gather_spacing_constraints_into(&else_block.elements, constraints);
+                    }
+                }
+                SequenceElement::RefOver(r) => {
+                    let mut idxs: Vec<usize> =
+                        r.participants.iter().filter_map(|n| index_of(n)).collect();
+                    idxs.sort_unstable();
+                    if idxs.len() >= 2 {
+                        let w = r
+                            .text
+                            .lines()
+                            .map(|l| self.measurer.measure_width(l))
+                            .fold(0.0f32, f32::max);
+                        constraints.push((idxs[0], idxs[idxs.len() - 1], w + 30.0));
                     }
                 }
                 _ => {}
@@ -398,6 +536,15 @@ impl<'a> LayoutContext<'a> {
 
         let mut prims = Vec::new();
         for p in &self.participants {
+            // Created participants appear at their first message instead
+            if !bottom && p.created {
+                continue;
+            }
+            let fill = p
+                .color
+                .as_deref()
+                .map(crate::theme::resolve_color)
+                .unwrap_or_else(|| self.theme.participant_bg_color().to_string());
             if p.kind == ParticipantKind::Database {
                 let (cyl_top, label_baseline) = if bottom {
                     (y + label_lh, y + label_lh - 3.0)
@@ -407,7 +554,7 @@ impl<'a> LayoutContext<'a> {
                 prims.push(database_cylinder(
                     p.x_center,
                     cyl_top,
-                    self.theme.participant_bg_color(),
+                    &fill,
                     self.theme.participant_border_color(),
                 ));
                 prims.push(database_cylinder_lens(
@@ -446,7 +593,7 @@ impl<'a> LayoutContext<'a> {
                 };
                 prims.push(Primitive::Path(Path {
                     d: circle_path_at(cx, cy, CIRCLE_ICON_R),
-                    fill: self.theme.participant_bg_color().to_string(),
+                    fill: fill.clone(),
                     stroke: self.theme.participant_border_color().to_string(),
                     stroke_width: 0.5,
                     dashed: false,
@@ -532,7 +679,7 @@ impl<'a> LayoutContext<'a> {
                         rc = r + QUEUE_CAP,
                         lc = l - QUEUE_CAP,
                     ),
-                    fill: self.theme.participant_bg_color().to_string(),
+                    fill: fill.clone(),
                     stroke: self.theme.participant_border_color().to_string(),
                     stroke_width: 0.5,
                     dashed: false,
@@ -577,7 +724,7 @@ impl<'a> LayoutContext<'a> {
                         y: by,
                         width: front_w,
                         height: box_h,
-                        fill: self.theme.participant_bg_color().to_string(),
+                        fill: fill.clone(),
                         stroke: self.theme.participant_border_color().to_string(),
                         stroke_width: 0.5,
                         rx: 0.0,
@@ -603,7 +750,7 @@ impl<'a> LayoutContext<'a> {
                 };
                 prims.push(Primitive::Path(Path {
                     d: circle_path_at(p.x_center, icon_top + ACTOR_HEAD_R, ACTOR_HEAD_R),
-                    fill: self.theme.participant_bg_color().to_string(),
+                    fill: fill.clone(),
                     stroke: self.theme.participant_border_color().to_string(),
                     stroke_width: 0.5,
                     dashed: false,
@@ -655,7 +802,7 @@ impl<'a> LayoutContext<'a> {
                     y: box_y,
                     width: p.box_width,
                     height: box_h,
-                    fill: self.theme.participant_bg_color().to_string(),
+                    fill: fill.clone(),
                     stroke: self.theme.participant_border_color().to_string(),
                     stroke_width: 0.5,
                     rx: 2.5,
@@ -680,7 +827,7 @@ impl<'a> LayoutContext<'a> {
         for p in &self.participants {
             self.bg_primitives.push(Primitive::DashedLine(DashedLine {
                 x1: p.x_center,
-                y1: start_y,
+                y1: p.materialized_y.unwrap_or(start_y),
                 x2: p.x_center,
                 y2: end_y,
                 stroke: self.theme.lifeline_color().to_string(),
@@ -699,9 +846,12 @@ impl<'a> LayoutContext<'a> {
                     // Already handled
                 }
                 SequenceElement::Message(msg) => {
-                    // Activations declared right after a message start at that
-                    // message's line (the arrow stops at the new bar's edge).
+                    // Activations declared right after a message (or with the
+                    // `++` shorthand) start at that message's line.
                     let mut pending = Vec::new();
+                    if msg.activate_target {
+                        pending.push(msg.to.clone());
+                    }
                     while let Some(SequenceElement::Activate(name)) = elements.get(i + 1) {
                         pending.push(name.clone());
                         i += 1;
@@ -735,8 +885,10 @@ impl<'a> LayoutContext<'a> {
                 SequenceElement::AutoNumber(config) => {
                     self.auto_number = Some(config.start.unwrap_or(1));
                     self.auto_number_step = config.increment.unwrap_or(1);
+                    self.auto_number_format = config.format.clone();
                 }
                 SequenceElement::Return(label) => self.layout_return(label),
+                SequenceElement::RefOver(r) => self.layout_ref_over(r),
                 SequenceElement::Delay(label) => self.layout_delay(label),
                 SequenceElement::Space(n) => {
                     self.y_cursor += n.unwrap_or(15) as f32;
@@ -744,6 +896,32 @@ impl<'a> LayoutContext<'a> {
             }
             i += 1;
         }
+    }
+
+    /// Format an autonumber value: the run of `0`s in the format string is
+    /// replaced by the zero-padded number, other characters are literal.
+    fn format_auto_number(&self, num: u32) -> String {
+        let Some(fmt) = &self.auto_number_format else {
+            return num.to_string();
+        };
+        let zeros = fmt.chars().filter(|c| *c == '0').count().max(1);
+        let padded = format!("{:0width$}", num, width = zeros);
+        let mut out = String::new();
+        let mut replaced = false;
+        for c in fmt.chars() {
+            if c == '0' {
+                if !replaced {
+                    out.push_str(&padded);
+                    replaced = true;
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        if !replaced {
+            out = format!("{} {}", padded, out);
+        }
+        out
     }
 
     /// Whether `name` currently has an open activation bar.
@@ -764,9 +942,9 @@ impl<'a> LayoutContext<'a> {
         }
 
         let mut label = msg.label.clone();
-        if let Some(ref mut num) = self.auto_number {
-            label = format!("{} {}", num, label);
-            *num += self.auto_number_step;
+        if let Some(num) = self.auto_number {
+            label = format!("{} {}", self.format_auto_number(num), label);
+            self.auto_number = Some(num + self.auto_number_step);
         }
 
         self.last_message = Some((msg.from.clone(), msg.to.clone()));
@@ -776,6 +954,18 @@ impl<'a> LayoutContext<'a> {
         } else {
             self.layout_normal_message(msg, &label, y);
             self.y_cursor = y;
+        }
+
+        // `--` shorthand: the source's activation ends at this message
+        if msg.deactivate_source {
+            if let Some(pos) = self
+                .active_participants
+                .iter()
+                .rposition(|(n, _, _)| *n == msg.from)
+            {
+                let (n, start_y, _) = self.active_participants.remove(pos);
+                self.finished_activations.push((n, start_y, y));
+            }
         }
     }
 
@@ -788,9 +978,9 @@ impl<'a> LayoutContext<'a> {
         let y = self.y_cursor + MESSAGE_SPACING;
 
         let mut label = label.to_string();
-        if let Some(ref mut num) = self.auto_number {
-            label = format!("{} {}", num, label);
-            *num += self.auto_number_step;
+        if let Some(num) = self.auto_number {
+            label = format!("{} {}", self.format_auto_number(num), label);
+            self.auto_number = Some(num + self.auto_number_step);
         }
 
         if let Some(activator) = activator {
@@ -803,6 +993,9 @@ impl<'a> LayoutContext<'a> {
                     head: ArrowHead::Filled,
                 },
                 is_self_referencing: false,
+                activate_target: false,
+                deactivate_source: false,
+                color: None,
             };
             // The callee is still active while drawing, so the line leaves
             // from its bar edge.
@@ -820,6 +1013,53 @@ impl<'a> LayoutContext<'a> {
         let from_x = self.participant_x(&msg.from);
         let to_x = self.participant_x(&msg.to);
 
+        // A `create`d participant materializes at its first received message:
+        // its head box is drawn here and the arrow stops at the box edge.
+        let create_idx = self
+            .participants
+            .iter()
+            .position(|p| p.name == msg.to && p.created && p.materialized_y.is_none());
+        if let Some(idx) = create_idx {
+            let (cx, w, h, fill, label_text) = {
+                let p = &self.participants[idx];
+                let fill = p
+                    .color
+                    .as_deref()
+                    .map(crate::theme::resolve_color)
+                    .unwrap_or_else(|| self.theme.participant_bg_color().to_string());
+                (
+                    p.x_center,
+                    p.box_width,
+                    self.participant_box_height(),
+                    fill,
+                    p.label.clone(),
+                )
+            };
+            let box_top = y - 21.3;
+            self.fg_primitives.push(Primitive::Rect(Rect {
+                x: cx - w / 2.0,
+                y: box_top,
+                width: w,
+                height: h,
+                fill,
+                stroke: self.theme.participant_border_color().to_string(),
+                stroke_width: 0.5,
+                rx: 2.5,
+                ry: 2.5,
+            }));
+            self.fg_primitives.push(Primitive::Text(Text {
+                bold: false,
+                x: cx,
+                y: box_top + h / 2.0 + self.title_measurer.line_height() * 0.32,
+                content: label_text,
+                font_size: self.theme.participant_font_size(),
+                font_family: self.theme.font_family().to_string(),
+                fill: "black".into(),
+                anchor: TextAnchor::Middle,
+            }));
+            self.participants[idx].materialized_y = Some(box_top + h);
+        }
+
         // Endpoints stop at activation bar edges: the source line starts at
         // the bar's side, the arrow tip stops 2px short of the target bar
         // (1px short of the bare lifeline).
@@ -828,7 +1068,14 @@ impl<'a> LayoutContext<'a> {
         } else {
             0.0
         };
-        let to_edge = if self.is_active(&msg.to) {
+        let to_edge = if create_idx.is_some() {
+            // stop at the new head box's edge
+            self.participants
+                .iter()
+                .find(|p| p.name == msg.to)
+                .map(|p| p.box_width / 2.0 + 2.0)
+                .unwrap_or(1.0)
+        } else if self.is_active(&msg.to) {
             ACTIVATION_HALF_W + 2.0
         } else {
             1.0
@@ -844,6 +1091,11 @@ impl<'a> LayoutContext<'a> {
             ArrowHead::Filled => ArrowHeadStyle::Filled,
             ArrowHead::Open => ArrowHeadStyle::Open,
         };
+        let stroke = msg
+            .color
+            .as_deref()
+            .map(crate::theme::resolve_color)
+            .unwrap_or_else(|| self.theme.arrow_color().to_string());
 
         // Arrow line
         self.fg_primitives.push(Primitive::Arrow(Arrow {
@@ -851,7 +1103,7 @@ impl<'a> LayoutContext<'a> {
             y1: y,
             x2,
             y2: y,
-            stroke: self.theme.arrow_color().to_string(),
+            stroke,
             stroke_width: 1.0,
             head,
             dashed,
@@ -889,6 +1141,11 @@ impl<'a> LayoutContext<'a> {
         let x0 = x + edge;
         let x_right = x0 + SELF_MSG_WIDTH;
         let y_bottom = y + SELF_MSG_HEIGHT;
+        let stroke = msg
+            .color
+            .as_deref()
+            .map(crate::theme::resolve_color)
+            .unwrap_or_else(|| self.theme.arrow_color().to_string());
 
         self.fg_primitives.push(Primitive::Path(Path {
             d: format!(
@@ -903,7 +1160,7 @@ impl<'a> LayoutContext<'a> {
                 y_bottom,
             ),
             fill: "none".into(),
-            stroke: self.theme.arrow_color().to_string(),
+            stroke: stroke.clone(),
             stroke_width: 1.0,
             dashed,
         }));
@@ -911,7 +1168,7 @@ impl<'a> LayoutContext<'a> {
         // Left-pointing arrowhead back into the lifeline/bar
         self.fg_primitives.push(Primitive::Polygon(Polygon {
             points: concave_head(x0 + 1.0, y_bottom, -1.0, 0.0),
-            fill: self.theme.arrow_color().to_string(),
+            fill: stroke,
             stroke: "none".into(),
             stroke_width: 0.0,
         }));
@@ -933,6 +1190,85 @@ impl<'a> LayoutContext<'a> {
                 .max(x0 + 7.0 + self.measurer.measure_width(label));
         }
         self.max_right = self.max_right.max(x_right);
+    }
+
+    /// `ref over A, B : text` — reference fragment frame with a "ref" tab.
+    fn layout_ref_over(&mut self, r: &RefOver) {
+        let members: Vec<&ParticipantInfo> = self
+            .participants
+            .iter()
+            .filter(|p| r.participants.contains(&p.name))
+            .collect();
+        if members.is_empty() {
+            return;
+        }
+        let left = members
+            .iter()
+            .map(|p| p.x_center - p.box_width / 2.0)
+            .fold(f32::MAX, f32::min)
+            - 3.0;
+        let right = members
+            .iter()
+            .map(|p| p.x_center + p.box_width / 2.0)
+            .fold(f32::MIN, f32::max)
+            + 3.0;
+
+        let lines: Vec<&str> = r.text.lines().collect();
+        let tab_h = 17.0;
+        let height = tab_h + lines.len() as f32 * 14.0 + 8.0;
+        let top = self.y_cursor + 8.0;
+
+        self.fg_primitives.push(Primitive::Rect(Rect {
+            x: left,
+            y: top,
+            width: right - left,
+            height,
+            fill: "none".into(),
+            stroke: "#000000".into(),
+            stroke_width: 1.5,
+            rx: 0.0,
+            ry: 0.0,
+        }));
+
+        let tab_w = self.measurer.measure_width("ref") + 26.0;
+        self.fg_primitives.push(Primitive::Polygon(Polygon {
+            points: vec![
+                (left, top),
+                (left + tab_w, top),
+                (left + tab_w, top + tab_h - 10.0),
+                (left + tab_w - 10.0, top + tab_h),
+                (left, top + tab_h),
+            ],
+            fill: "#EEEEEE".into(),
+            stroke: "#000000".into(),
+            stroke_width: 2.0,
+        }));
+        self.fg_primitives.push(Primitive::Text(Text {
+            bold: true,
+            x: left + 13.0,
+            y: top + 13.5,
+            content: "ref".into(),
+            font_size: self.theme.font_size(),
+            font_family: self.theme.font_family().to_string(),
+            fill: "black".into(),
+            anchor: TextAnchor::Start,
+        }));
+
+        for (i, line) in lines.iter().enumerate() {
+            self.fg_primitives.push(Primitive::Text(Text {
+                bold: false,
+                x: (left + right) / 2.0,
+                y: top + tab_h + 13.0 + i as f32 * 14.0,
+                content: line.to_string(),
+                font_size: self.theme.font_size() - 1.0,
+                font_family: self.theme.font_family().to_string(),
+                fill: "black".into(),
+                anchor: TextAnchor::Middle,
+            }));
+        }
+
+        self.max_right = self.max_right.max(right + 2.0);
+        self.y_cursor = top + height;
     }
 
     /// Horizontal placement of a note: (left x, width). Depends only on the
@@ -985,6 +1321,11 @@ impl<'a> LayoutContext<'a> {
     }
 
     fn layout_note(&mut self, note: &Note) {
+        let note_fill = note
+            .color
+            .as_deref()
+            .map(crate::theme::resolve_color)
+            .unwrap_or_else(|| self.theme.note_bg_color().to_string());
         let (x, note_width) = self.note_x_width(note);
         let note_height = self.measurer.measure_multiline_height(&note.text) + NOTE_PADDING * 2.0;
         let y = self.y_cursor + NOTE_TOP_GAP;
@@ -1009,7 +1350,7 @@ impl<'a> LayoutContext<'a> {
                 x,
                 y,
             ),
-            fill: self.theme.note_bg_color().to_string(),
+            fill: note_fill.clone(),
             stroke: self.theme.note_border_color().to_string(),
             stroke_width: 0.5,
             dashed: false,
@@ -1024,7 +1365,7 @@ impl<'a> LayoutContext<'a> {
                 right,
                 y + NOTE_FOLD,
             ),
-            fill: self.theme.note_bg_color().to_string(),
+            fill: note_fill.clone(),
             stroke: self.theme.note_border_color().to_string(),
             stroke_width: 0.5,
             dashed: false,

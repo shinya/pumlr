@@ -17,22 +17,30 @@ Sequence diagrams and activity diagrams are supported.
 
 - Participant types with icons: `participant`, `actor` (stick figure),
   `boundary`, `control`, `entity`, `database` (cylinder), `collections`,
-  `queue` — with aliases (`participant "Long Name" as alias`)
-- Arrows: `->`, `-->`, `->>`, `-->>` and left-facing variants; self-messages
+  `queue` — with aliases (`participant "Long Name" as alias`) and fill
+  colors (`participant Foo #LightBlue`)
+- Arrows: `->`, `-->`, `->>`, `-->>` and left-facing variants; self-messages;
+  arrow colors (`-[#red]>`)
 - Activation bars: `activate` / `deactivate` / `return` (reply to the caller,
-  arrows stop at bar edges)
+  arrows stop at bar edges) and the `++` / `--` message shorthand
+- `box "Title" #Color ... end box` participant groupings
 - Groups: `alt/else`, `loop`, `opt`, `break`, `par`, `critical`, `group`
-- Notes: `note left of`, `note right of`, `note over A, B` (spanning)
-- `autonumber [start [increment]]`, `hide footbox`
+- Notes: `note left of`, `note right of`, `note over A, B` (spanning),
+  with colors (`note right of X #Color : text`)
+- `create` participants (appear at their first message), `ref over A, B`
+- `autonumber [start [increment] ["format"]]`, `hide footbox`
+- `header` / `footer` / `caption`
 - Separators (`== label ==`), delays (`...`), spacing (`|||`, `||N||`), title
 
 ### Activity diagrams
 
-- Actions `:text;`, `start` / `stop` / `end` / `detach`
+- Actions `:text;` with colors (`:text; <<#Color>>`, legacy `#Color:text;`),
+  `start` / `stop` / `end` / `detach`
 - `if / then / elseif / else / endif` (elseif renders as a PlantUML-style
   hexagon chain), `switch / case / endswitch`
 - `while / endwhile`, `repeat / backward / repeat while`
 - `fork / fork again / end fork`, `partition { ... }`
+- Swimlanes (`|Lane|`, top-level lane switching)
 - Edge labels (`-> label;`), notes, title
 
 ## Usage

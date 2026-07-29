@@ -1,0 +1,12 @@
+@startuml
+header Internal API
+footer Page 1 of 1
+caption Figure 1: error handling
+
+participant App
+participant Service
+
+App -[#red]> Service : fail fast
+Service -[#0000FF]-> App : recover
+App -[#green]>> Service : async ok
+@enduml

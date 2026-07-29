@@ -8,7 +8,12 @@ use crate::error::PlantUmlError;
 pub fn parse(input: &str) -> Result<SequenceDiagram, PlantUmlError> {
     let mut elements = Vec::new();
     let mut title = None;
+    let mut header = None;
+    let mut footer = None;
+    let mut caption = None;
     let mut hide_footbox = false;
+    let mut boxes: Vec<ParticipantBox> = Vec::new();
+    let mut open_box: Option<ParticipantBox> = None;
     let mut line_num = 0;
 
     let mut lines_iter = input.lines().peekable();
@@ -35,6 +40,49 @@ pub fn parse(input: &str) -> Result<SequenceDiagram, PlantUmlError> {
             continue;
         }
 
+        // header / footer / caption
+        if let Some(t) = strip_prefix_ci(trimmed, "header ") {
+            header = Some(t.trim().to_string());
+            continue;
+        }
+        if let Some(t) = strip_prefix_ci(trimmed, "footer ") {
+            footer = Some(t.trim().to_string());
+            continue;
+        }
+        if let Some(t) = strip_prefix_ci(trimmed, "caption ") {
+            caption = Some(t.trim().to_string());
+            continue;
+        }
+
+        // box "Title" [#Color] ... end box
+        if trimmed.eq_ignore_ascii_case("end box") {
+            if let Some(b) = open_box.take() {
+                boxes.push(b);
+            }
+            continue;
+        }
+        if let Some(rest) = strip_prefix_ci(trimmed, "box") {
+            let rest = rest.trim();
+            if rest.is_empty()
+                || rest.starts_with('"')
+                || rest.starts_with('#')
+                || trimmed.to_lowercase().starts_with("box ")
+            {
+                let (title_part, color) = match rest.rfind('#') {
+                    Some(hash) if !rest[hash..].contains(' ') => {
+                        (rest[..hash].trim(), Some(rest[hash..].to_string()))
+                    }
+                    _ => (rest, None),
+                };
+                open_box = Some(ParticipantBox {
+                    title: title_part.trim_matches('"').to_string(),
+                    color,
+                    participants: Vec::new(),
+                });
+                continue;
+            }
+        }
+
         // Multi-line note
         if let Some(note) = try_parse_multiline_note(trimmed, &mut lines_iter) {
             elements.push(SequenceElement::Note(note));
@@ -49,13 +97,24 @@ pub fn parse(input: &str) -> Result<SequenceDiagram, PlantUmlError> {
         }
 
         if let Some(element) = parse_line(trimmed, line_num)? {
+            if let (Some(open), SequenceElement::ParticipantDecl(p)) = (&mut open_box, &element) {
+                open.participants.push(p.name.clone());
+            }
             elements.push(element);
         }
+    }
+
+    if let Some(b) = open_box.take() {
+        boxes.push(b);
     }
 
     Ok(SequenceDiagram {
         title,
         hide_footbox,
+        boxes,
+        header,
+        footer,
+        caption,
         elements,
     })
 }
@@ -74,15 +133,25 @@ fn parse_line(line: &str, _line_num: usize) -> Result<Option<SequenceElement>, P
         return Ok(Some(SequenceElement::AutoNumber(AutoNumberConfig {
             start: None,
             increment: None,
+            format: None,
         })));
     }
     if let Some(rest) = strip_prefix_ci(line, "autonumber ") {
-        let mut nums = rest.split_whitespace().map(|t| t.parse::<u32>().ok());
+        // Optional trailing quoted format string
+        let (num_part, format) = match rest.find('"') {
+            Some(q) => (
+                &rest[..q],
+                Some(rest[q..].trim().trim_matches('"').to_string()),
+            ),
+            None => (rest, None),
+        };
+        let mut nums = num_part.split_whitespace().map(|t| t.parse::<u32>().ok());
         let n = nums.next().flatten();
         let inc = nums.next().flatten();
         return Ok(Some(SequenceElement::AutoNumber(AutoNumberConfig {
             start: n,
             increment: inc,
+            format,
         })));
     }
 
@@ -116,6 +185,36 @@ fn parse_line(line: &str, _line_num: usize) -> Result<Option<SequenceElement>, P
             let inner = &line[2..line.len() - 2];
             let n = inner.trim().parse::<u32>().ok();
             return Ok(Some(SequenceElement::Space(n)));
+        }
+    }
+
+    // create [participant|actor] Name
+    if let Some(rest) = strip_prefix_ci(line, "create ") {
+        let rest = rest.trim();
+        let (rest, kind) = if let Some(r) = strip_prefix_ci(rest, "participant ") {
+            (r.trim(), ParticipantKind::Participant)
+        } else if let Some(r) = strip_prefix_ci(rest, "actor ") {
+            (r.trim(), ParticipantKind::Actor)
+        } else {
+            (rest, ParticipantKind::Participant)
+        };
+        return Ok(Some(SequenceElement::ParticipantDecl(
+            parse_participant_name_label_created(rest, kind, true),
+        )));
+    }
+
+    // ref over A, B : text
+    if let Some(rest) = strip_prefix_ci(line, "ref over ") {
+        if let Some(colon) = rest.find(':') {
+            let participants: Vec<String> = rest[..colon]
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .collect();
+            let text = rest[colon + 1..].trim().replace("\\n", "\n");
+            return Ok(Some(SequenceElement::RefOver(RefOver {
+                participants,
+                text,
+            })));
         }
     }
 
@@ -171,6 +270,21 @@ fn try_parse_participant_decl(line: &str) -> Option<Participant> {
 }
 
 fn parse_participant_name_label(input: &str, kind: ParticipantKind) -> Participant {
+    parse_participant_name_label_created(input, kind, false)
+}
+
+fn parse_participant_name_label_created(
+    input: &str,
+    kind: ParticipantKind,
+    created: bool,
+) -> Participant {
+    // Trailing `#Color` applies to the participant's fill
+    let (input, color) = match input.rfind('#') {
+        Some(hash) if !input[hash..].contains(' ') => {
+            (input[..hash].trim(), Some(input[hash..].trim().to_string()))
+        }
+        _ => (input, None),
+    };
     // Pattern: "Long Name" as alias
     if let Some(stripped) = input.strip_prefix('"') {
         if let Some(end_quote) = stripped.find('"') {
@@ -181,12 +295,16 @@ fn parse_participant_name_label(input: &str, kind: ParticipantKind) -> Participa
                     name: alias.trim().to_string(),
                     label: Some(label),
                     kind,
+                    color,
+                    created,
                 };
             }
             return Participant {
                 name: label.clone(),
                 label: Some(label),
                 kind,
+                color,
+                created,
             };
         }
     }
@@ -199,6 +317,8 @@ fn parse_participant_name_label(input: &str, kind: ParticipantKind) -> Participa
             name,
             label: Some(label),
             kind,
+            color,
+            created,
         };
     }
 
@@ -208,12 +328,36 @@ fn parse_participant_name_label(input: &str, kind: ParticipantKind) -> Participa
         name: name.to_string(),
         label: None,
         kind,
+        color,
+        created,
     }
 }
 
 // --- Message parsing ---
 
+/// Strip an inline arrow color like `-[#red]>` from the line, returning the
+/// cleaned line and the color token.
+fn extract_arrow_color(line: &str) -> (String, Option<String>) {
+    if let Some(open) = line.find("[#") {
+        if let Some(close_rel) = line[open..].find(']') {
+            let close = open + close_rel;
+            let before_ok = line[..open].ends_with('-') || line[..open].ends_with('<');
+            let after = &line[close + 1..];
+            let after_ok = after.starts_with('-') || after.starts_with('>');
+            if before_ok && after_ok {
+                let color = line[open + 1..close].to_string();
+                let cleaned = format!("{}{}", &line[..open], after);
+                return (cleaned, Some(color));
+            }
+        }
+    }
+    (line.to_string(), None)
+}
+
 fn try_parse_message(line: &str) -> Option<Message> {
+    let (cleaned, color) = extract_arrow_color(line);
+    let line = cleaned.as_str();
+
     // Find arrow pattern in line
     let arrow_patterns: &[(&str, ArrowStyle, bool)] = &[
         // solid filled (left)
@@ -310,6 +454,23 @@ fn try_parse_message(line: &str) -> Option<Message> {
                 (left, right, label)
             };
 
+            // `++` / `--` shorthand after the target: activate the target /
+            // deactivate the source at this message.
+            let mut to_part = to_part.trim();
+            let mut activate_target = false;
+            let mut deactivate_source = false;
+            loop {
+                if let Some(stripped) = to_part.strip_suffix("++") {
+                    activate_target = true;
+                    to_part = stripped.trim();
+                } else if let Some(stripped) = to_part.strip_suffix("--") {
+                    deactivate_source = true;
+                    to_part = stripped.trim();
+                } else {
+                    break;
+                }
+            }
+
             let from = clean_participant_name(from_part);
             let to = clean_participant_name(to_part);
 
@@ -325,6 +486,9 @@ fn try_parse_message(line: &str) -> Option<Message> {
                 label: label.unwrap_or_default(),
                 arrow: *style,
                 is_self_referencing: is_self,
+                activate_target,
+                deactivate_source,
+                color: color.clone(),
             });
         }
     }
@@ -348,37 +512,51 @@ fn clean_participant_name(name: &str) -> String {
 
 // --- Note parsing ---
 
+/// Split a trailing `#color` token off a note target segment.
+fn split_note_color(segment: &str) -> (&str, Option<String>) {
+    if let Some(hash) = segment.rfind('#') {
+        let color = segment[hash..].trim();
+        if !color.contains(' ') {
+            return (segment[..hash].trim(), Some(color.to_string()));
+        }
+    }
+    (segment.trim(), None)
+}
+
 fn try_parse_single_line_note(line: &str) -> Option<Note> {
     // note left of X : text
     // note right of X : text
     // note over X : text
     // note over X, Y : text
+    // ... each optionally with a `#Color` before the colon
 
     if let Some(rest) = strip_prefix_ci(line, "note left of ") {
         if let Some(colon_pos) = rest.find(':') {
-            let target = rest[..colon_pos].trim().to_string();
+            let (target, color) = split_note_color(&rest[..colon_pos]);
             let text = rest[colon_pos + 1..].trim().to_string();
             return Some(Note {
-                position: NotePosition::LeftOf(target),
+                position: NotePosition::LeftOf(target.to_string()),
                 text,
+                color,
             });
         }
     }
 
     if let Some(rest) = strip_prefix_ci(line, "note right of ") {
         if let Some(colon_pos) = rest.find(':') {
-            let target = rest[..colon_pos].trim().to_string();
+            let (target, color) = split_note_color(&rest[..colon_pos]);
             let text = rest[colon_pos + 1..].trim().to_string();
             return Some(Note {
-                position: NotePosition::RightOf(target),
+                position: NotePosition::RightOf(target.to_string()),
                 text,
+                color,
             });
         }
     }
 
     if let Some(rest) = strip_prefix_ci(line, "note over ") {
         if let Some(colon_pos) = rest.find(':') {
-            let targets_str = rest[..colon_pos].trim();
+            let (targets_str, color) = split_note_color(&rest[..colon_pos]);
             let targets: Vec<String> = targets_str
                 .split(',')
                 .map(|s| s.trim().to_string())
@@ -387,6 +565,7 @@ fn try_parse_single_line_note(line: &str) -> Option<Note> {
             return Some(Note {
                 position: NotePosition::Over(targets),
                 text,
+                color,
             });
         }
     }
@@ -401,19 +580,21 @@ fn try_parse_multiline_note<'a, I>(
 where
     I: Iterator<Item = &'a str>,
 {
-    let position = if let Some(rest) = strip_prefix_ci(first_line, "note left of ") {
-        Some(NotePosition::LeftOf(rest.trim().to_string()))
+    let (position, color) = if let Some(rest) = strip_prefix_ci(first_line, "note left of ") {
+        let (target, color) = split_note_color(rest);
+        (Some(NotePosition::LeftOf(target.to_string())), color)
     } else if let Some(rest) = strip_prefix_ci(first_line, "note right of ") {
-        Some(NotePosition::RightOf(rest.trim().to_string()))
+        let (target, color) = split_note_color(rest);
+        (Some(NotePosition::RightOf(target.to_string())), color)
     } else if let Some(rest) = strip_prefix_ci(first_line, "note over ") {
-        let targets: Vec<String> = rest
-            .trim()
+        let (targets_str, color) = split_note_color(rest);
+        let targets: Vec<String> = targets_str
             .split(',')
             .map(|s| s.trim().to_string())
             .collect();
-        Some(NotePosition::Over(targets))
+        (Some(NotePosition::Over(targets)), color)
     } else {
-        None
+        (None, None)
     };
 
     let position = position?;
@@ -436,6 +617,7 @@ where
     Some(Note {
         position,
         text: text_lines.join("\n"),
+        color,
     })
 }
 

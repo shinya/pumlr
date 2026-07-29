@@ -1,0 +1,11 @@
+@startuml
+start
+:Read Input; <<#LightBlue>>
+:Check Data; <<#pink>>
+if (ok?) then (yes)
+  :Accept; <<#palegreen>>
+else (no)
+  :Reject; <<#FFAAAA>>
+endif
+stop
+@enduml

@@ -1,0 +1,13 @@
+@startuml
+|Customer|
+start
+:Place Order;
+|Shop|
+:Process Order;
+:Pack Items;
+|Delivery|
+:Ship Package;
+|Customer|
+:Receive Package;
+stop
+@enduml

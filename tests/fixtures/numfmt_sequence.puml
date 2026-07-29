@@ -1,0 +1,6 @@
+@startuml
+autonumber 10 10 "[000]"
+Alice -> Bob : first
+Bob --> Alice : second
+Alice -> Bob : third
+@enduml

@@ -2,6 +2,12 @@
 #[derive(Debug, Clone)]
 pub struct ActivityDiagram {
     pub title: Option<String>,
+    /// `header text` — small gray text at the top right.
+    pub header: Option<String>,
+    /// `footer text` — small gray text at the bottom center.
+    pub footer: Option<String>,
+    /// `caption text` — text below the diagram, centered.
+    pub caption: Option<String>,
     pub elements: Vec<ActivityElement>,
 }
 
@@ -21,6 +27,8 @@ pub enum ActivityElement {
     Arrow(ArrowLabel),
     Repeat(RepeatBlock),
     Detach,
+    /// `|Lane|` — switch the current swimlane.
+    LaneChange(String),
 }
 
 /// `repeat ... [backward :action;] repeat while (cond) is (label)`
@@ -38,6 +46,8 @@ pub struct RepeatBlock {
 pub struct Action {
     pub label: String,
     pub shape: ActionShape,
+    /// Fill override from `:text; <<#Color>>` or the legacy `#Color:text;`.
+    pub color: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

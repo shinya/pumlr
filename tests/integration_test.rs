@@ -437,3 +437,91 @@ fn test_classic_theme() {
     assert!(modern.contains("#F1F1F1"));
     assert!(!modern.contains("#FEFECE"));
 }
+
+#[test]
+fn test_box_and_activation_shorthand() {
+    let input = std::fs::read_to_string("tests/fixtures/box_sequence.puml").unwrap();
+    let svg = render_svg(&input).unwrap();
+    // Box panels with titles; #LightBlue resolves to a CSS color name
+    assert!(svg.contains("Frontend"));
+    assert!(svg.contains("Backend"));
+    assert!(svg.contains(r#"fill="lightblue""#));
+    assert!(svg.contains(r##"fill="#DDDDDD""##));
+    // ++/-- shorthand creates activation bars (white 10px-wide rects)
+    let bar_count = svg.matches(r##"fill="#FFFFFF" stroke="#181818""##).count();
+    assert_eq!(bar_count, 2, "expected activation bars for Api and Db");
+}
+
+#[test]
+fn test_color_overrides() {
+    let seq = std::fs::read_to_string("tests/fixtures/color_diagrams.puml").unwrap();
+    let svg = render_svg(&seq).unwrap();
+    assert!(
+        svg.contains(r#"fill="lightgreen""#),
+        "participant color name"
+    );
+    assert!(svg.contains(r##"fill="#FFAAAA""##), "participant hex color");
+    assert!(svg.contains(r#"fill="lightblue""#), "note color");
+
+    let act = std::fs::read_to_string("tests/fixtures/color_activity.puml").unwrap();
+    let svg = render_svg(&act).unwrap();
+    assert!(
+        svg.contains(r#"fill="lightblue""#),
+        "action stereotype color"
+    );
+    assert!(
+        svg.contains(r#"fill="palegreen""#),
+        "action color in branch"
+    );
+    assert!(svg.contains(r##"fill="#FFAAAA""##), "action hex color");
+}
+
+#[test]
+fn test_arrow_colors_and_page_decorations() {
+    let input = std::fs::read_to_string("tests/fixtures/arrow_color_sequence.puml").unwrap();
+    let svg = render_svg(&input).unwrap();
+    assert!(svg.contains(r##"stroke="#FF0000""##) || svg.contains(r#"stroke="red""#));
+    assert!(svg.contains(r##"stroke="#0000FF""##));
+    assert!(svg.contains("Internal API"), "header");
+    assert!(svg.contains("Page 1 of 1"), "footer");
+    assert!(svg.contains("Figure 1: error handling"), "caption");
+}
+
+#[test]
+fn test_autonumber_format() {
+    let input = std::fs::read_to_string("tests/fixtures/numfmt_sequence.puml").unwrap();
+    let svg = render_svg(&input).unwrap();
+    assert!(svg.contains("[010] first"));
+    assert!(svg.contains("[020] second"));
+    assert!(svg.contains("[030] third"));
+}
+
+#[test]
+fn test_create_and_ref_over() {
+    let input = std::fs::read_to_string("tests/fixtures/create_ref_sequence.puml").unwrap();
+    let svg = render_svg(&input).unwrap();
+    // Worker's head appears once (created mid-diagram) plus the tail row
+    let worker_count = svg.matches(">Worker</text>").count();
+    assert_eq!(
+        worker_count, 2,
+        "created participant: one mid-diagram head + one tail"
+    );
+    assert!(svg.contains(">ref</text>"));
+    assert!(svg.contains("shared setup"));
+    assert!(svg.contains("see diagram 2"));
+}
+
+#[test]
+fn test_swimlanes() {
+    let input = std::fs::read_to_string("tests/fixtures/swimlane_activity.puml").unwrap();
+    let svg = render_svg(&input).unwrap();
+    for lane in ["Customer", "Shop", "Delivery"] {
+        assert!(svg.contains(lane), "lane title {lane}");
+    }
+    // 4 boundary lines for 3 lanes, 1.5px black
+    let boundary_count = svg
+        .matches(r##"stroke="#000000" stroke-width="1.5""##)
+        .count();
+    assert_eq!(boundary_count, 4, "lane boundary lines");
+    assert!(svg.contains("Receive Package"));
+}

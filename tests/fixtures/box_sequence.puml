@@ -1,0 +1,16 @@
+@startuml
+box "Frontend" #LightBlue
+participant Browser
+participant SPA
+end box
+box "Backend"
+participant Api
+database Db
+end box
+
+Browser -> SPA : click
+SPA -> Api ++ : fetch
+Api -> Db ++ : query
+Db --> Api -- : rows
+Api --> SPA -- : json
+@enduml

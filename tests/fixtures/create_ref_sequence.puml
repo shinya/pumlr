@@ -1,0 +1,11 @@
+@startuml
+participant Main
+participant Helper
+
+Main -> Helper : prepare
+create Worker
+Main -> Worker : spawn
+Worker --> Main : ready
+ref over Helper, Worker : shared setup\nsee diagram 2
+Main -> Worker : run
+@enduml

@@ -4,6 +4,18 @@ pub mod default;
 pub use classic::ClassicTheme;
 pub use default::DefaultTheme;
 
+/// Resolve a PlantUML color token (`#RRGGBB`, `#RGB`, or `#Name` like
+/// `#LightBlue`) into a value usable as an SVG fill.
+pub fn resolve_color(token: &str) -> String {
+    let body = token.trim().trim_start_matches('#');
+    if !body.is_empty() && body.chars().all(|c| c.is_ascii_hexdigit()) {
+        format!("#{}", body)
+    } else {
+        // Named colors: SVG/CSS understands the standard names directly.
+        body.to_ascii_lowercase()
+    }
+}
+
 /// Theme trait for styling diagrams.
 ///
 /// Sequence-diagram colors are required methods; activity-diagram colors have

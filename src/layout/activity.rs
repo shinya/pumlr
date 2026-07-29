@@ -48,6 +48,9 @@ const WHILE_EXIT_DROP: f32 = 12.0;
 const CHAIN_COL_GAP: f32 = 15.0;
 /// Repeat loop: gap between the body's right edge and the backward action.
 const REPEAT_RAIL_GAP: f32 = 24.0;
+/// Swimlanes: title font size and horizontal padding inside a lane.
+const LANE_TITLE_FONT_SIZE: f32 = 18.0;
+const LANE_PADDING: f32 = 8.0;
 /// If/elseif chain: gap between hexagon bottom and branch tops.
 const CHAIN_BRANCH_GAP: f32 = 33.0;
 
@@ -103,6 +106,14 @@ impl<'a> ActivityLayoutContext<'a> {
     }
 
     fn layout(&mut self, diagram: &ActivityDiagram) -> LaidOutDiagram {
+        if diagram
+            .elements
+            .iter()
+            .any(|e| matches!(e, ActivityElement::LaneChange(_)))
+        {
+            return self.layout_lanes(diagram);
+        }
+
         // First pass: measure total size
         let subtree = self.measure_elements(&diagram.elements);
 
@@ -157,8 +168,218 @@ impl<'a> ActivityLayoutContext<'a> {
             }
         }
 
+        // Header (top right) and caption/footer (bottom, centered)
+        let mut total_height = total_height;
+        if let Some(header) = &diagram.header {
+            self.primitives.push(Primitive::Text(Text {
+                x: actual_width - 4.0,
+                y: 12.0,
+                content: header.clone(),
+                font_size: 10.0,
+                font_family: FONT_FAMILY.into(),
+                fill: "#888888".into(),
+                anchor: TextAnchor::End,
+                bold: false,
+            }));
+        }
+        if let Some(caption) = &diagram.caption {
+            self.primitives.push(Primitive::Text(Text {
+                x: actual_width / 2.0,
+                y: total_height - 4.0,
+                content: caption.clone(),
+                font_size: TITLE_FONT_SIZE,
+                font_family: FONT_FAMILY.into(),
+                fill: self.theme.activity_text_color().into(),
+                anchor: TextAnchor::Middle,
+                bold: false,
+            }));
+            total_height += 20.0;
+        }
+        if let Some(footer) = &diagram.footer {
+            self.primitives.push(Primitive::Text(Text {
+                x: actual_width / 2.0,
+                y: total_height - 4.0,
+                content: footer.clone(),
+                font_size: 10.0,
+                font_family: FONT_FAMILY.into(),
+                fill: "#888888".into(),
+                anchor: TextAnchor::Middle,
+                bold: false,
+            }));
+            total_height += 14.0;
+        }
+
         LaidOutDiagram {
             width: actual_width,
+            height: total_height,
+            primitives: std::mem::take(&mut self.primitives),
+        }
+    }
+
+    /// Swimlane layout: top-level elements are assigned to the current lane
+    /// (`|Lane|` switches it); each lane is a column sized to its content,
+    /// with an 18px title at the top and 1.5px black boundary lines.
+    fn layout_lanes(&mut self, diagram: &ActivityDiagram) -> LaidOutDiagram {
+        // Assign each top-level element to a lane
+        let mut lane_names: Vec<String> = Vec::new();
+        let mut assignment: Vec<(usize, &ActivityElement)> = Vec::new();
+        let mut current = 0usize;
+        for e in &diagram.elements {
+            if let ActivityElement::LaneChange(name) = e {
+                current = match lane_names.iter().position(|n| n == name) {
+                    Some(i) => i,
+                    None => {
+                        lane_names.push(name.clone());
+                        lane_names.len() - 1
+                    }
+                };
+            } else {
+                if lane_names.is_empty() {
+                    lane_names.push(String::new());
+                }
+                assignment.push((current, e));
+            }
+        }
+
+        // Lane widths: max of content and title, plus padding
+        let mut lane_w = vec![0.0f32; lane_names.len()];
+        for (lane, e) in &assignment {
+            if matches!(e, ActivityElement::Arrow(_)) {
+                continue;
+            }
+            let sub = self.measure_element(e);
+            lane_w[*lane] = lane_w[*lane].max(sub.width);
+        }
+        for (i, name) in lane_names.iter().enumerate() {
+            let title_w = self.measurer.measure_width(name) * (LANE_TITLE_FONT_SIZE / FONT_SIZE);
+            lane_w[i] = lane_w[i].max(title_w) + LANE_PADDING * 2.0;
+        }
+
+        // Lane bounds and centers
+        let mut boundaries = vec![DIAGRAM_MARGIN];
+        for w in &lane_w {
+            boundaries.push(boundaries.last().unwrap() + w);
+        }
+        let centers: Vec<f32> = (0..lane_w.len())
+            .map(|i| (boundaries[i] + boundaries[i + 1]) / 2.0)
+            .collect();
+        let total_width = boundaries.last().unwrap() + DIAGRAM_MARGIN;
+
+        // Optional title above the lane headers
+        let mut header_top = DIAGRAM_MARGIN - 3.0;
+        if let Some(title) = &diagram.title {
+            self.primitives.push(Primitive::Text(Text {
+                x: total_width / 2.0,
+                y: DIAGRAM_MARGIN + self.measurer.line_height(),
+                content: title.clone(),
+                font_size: TITLE_FONT_SIZE,
+                font_family: FONT_FAMILY.into(),
+                fill: self.theme.activity_text_color().into(),
+                anchor: TextAnchor::Middle,
+                bold: true,
+            }));
+            header_top += self.measurer.line_height() + TITLE_MARGIN;
+        }
+
+        // Lane titles
+        for (i, name) in lane_names.iter().enumerate() {
+            if !name.is_empty() {
+                self.primitives.push(Primitive::Text(Text {
+                    x: centers[i],
+                    y: header_top + 17.4,
+                    content: name.clone(),
+                    font_size: LANE_TITLE_FONT_SIZE,
+                    font_family: FONT_FAMILY.into(),
+                    fill: self.theme.activity_text_color().into(),
+                    anchor: TextAnchor::Middle,
+                    bold: false,
+                }));
+            }
+        }
+
+        // Content flows downward, hopping lanes with small elbows
+        let mut y = header_top + 26.0;
+        let mut prev: Option<(usize, f32)> = None;
+        let mut pending_label: Option<String> = None;
+        for (lane, element) in &assignment {
+            if let ActivityElement::Arrow(arrow) = element {
+                pending_label = Some(arrow.label.clone());
+                continue;
+            }
+            let cx = centers[*lane];
+            if let Some((prev_lane, prev_cx)) = prev {
+                let gap = if pending_label.is_some() {
+                    ARROW_SPACING * 2.0
+                } else {
+                    ARROW_SPACING
+                };
+                if prev_lane == *lane {
+                    let chain_entry =
+                        matches!(element, ActivityElement::If(b) if !b.elseif_blocks.is_empty());
+                    if !chain_entry {
+                        self.draw_down_arrow(cx, y, y + gap, pending_label.as_deref());
+                    }
+                } else {
+                    // Cross-lane elbow: drop 5, over, and down into the element
+                    self.primitives.push(Primitive::Path(Path {
+                        d: format!(
+                            "M {},{} L {},{} L {},{} L {},{}",
+                            prev_cx,
+                            y,
+                            prev_cx,
+                            y + 5.0,
+                            cx,
+                            y + 5.0,
+                            cx,
+                            y + gap,
+                        ),
+                        fill: "none".into(),
+                        stroke: self.theme.activity_edge_color().into(),
+                        stroke_width: 1.0,
+                        dashed: false,
+                    }));
+                    self.primitives.push(Primitive::Polygon(Polygon {
+                        points: concave_head(cx, y + gap, 0.0, 1.0),
+                        fill: self.theme.activity_edge_color().into(),
+                        stroke: "none".into(),
+                        stroke_width: 0.0,
+                    }));
+                    if let Some(label) = &pending_label {
+                        self.primitives.push(Primitive::Text(Text {
+                            x: (prev_cx + cx) / 2.0,
+                            y: y + 1.0,
+                            content: label.clone(),
+                            font_size: LABEL_FONT_SIZE,
+                            font_family: FONT_FAMILY.into(),
+                            fill: self.theme.activity_text_color().into(),
+                            anchor: TextAnchor::Middle,
+                            bold: false,
+                        }));
+                    }
+                }
+                y += gap;
+            }
+            y = self.draw_element(element, cx, y);
+            prev = Some((*lane, cx));
+            pending_label = None;
+        }
+
+        let total_height = y + DIAGRAM_MARGIN;
+
+        // Lane boundary lines (including the outer edges)
+        for bx in &boundaries {
+            self.primitives.push(Primitive::Line(Line {
+                x1: *bx,
+                y1: header_top,
+                x2: *bx,
+                y2: total_height - 4.0,
+                stroke: "#000000".into(),
+                stroke_width: 1.5,
+            }));
+        }
+
+        LaidOutDiagram {
+            width: total_width,
             height: total_height,
             primitives: std::mem::take(&mut self.primitives),
         }
@@ -172,6 +393,9 @@ impl<'a> ActivityLayoutContext<'a> {
         let mut max_right = 0.0f32; // max extent to the right of center
 
         for element in elements {
+            if matches!(element, ActivityElement::LaneChange(_)) {
+                continue;
+            }
             let sub = self.measure_element(element);
             total_height += sub.height + ARROW_SPACING;
             max_left = max_left.max(sub.center_x);
@@ -243,6 +467,11 @@ impl<'a> ActivityLayoutContext<'a> {
                 }
             }
             ActivityElement::Repeat(block) => self.measure_repeat(block),
+            ActivityElement::LaneChange(_) => SubtreeBox {
+                width: 0.0,
+                height: 0.0,
+                center_x: 0.0,
+            },
             // An edge label contributes no height of its own: the surrounding
             // connector is drawn as one longer arrow with the label beside it.
             ActivityElement::Arrow(arrow) => {
@@ -456,6 +685,10 @@ impl<'a> ActivityLayoutContext<'a> {
                 pending_label = Some(arrow.label.clone());
                 continue;
             }
+            // Lane switches only matter to the top-level lane layout
+            if matches!(element, ActivityElement::LaneChange(_)) {
+                continue;
+            }
 
             // Draw downward arrow from previous element (except before the
             // first). An if/elseif chain draws its own entry elbow, and a
@@ -522,6 +755,7 @@ impl<'a> ActivityLayoutContext<'a> {
             }
             // Edge labels are folded into the connectors by draw_elements
             ActivityElement::Arrow(_) => y,
+            ActivityElement::LaneChange(_) => y,
         }
     }
 
@@ -531,12 +765,17 @@ impl<'a> ActivityLayoutContext<'a> {
         let w = text_w + ACTION_PADDING_H * 2.0;
         let h = text_h + ACTION_PADDING_V * 2.0;
 
+        let fill = action
+            .color
+            .as_deref()
+            .map(crate::theme::resolve_color)
+            .unwrap_or_else(|| self.theme.activity_shape_fill().to_string());
         self.primitives.push(Primitive::Rect(Rect {
             x: center_x - w / 2.0,
             y,
             width: w,
             height: h,
-            fill: self.theme.activity_shape_fill().into(),
+            fill,
             stroke: self.theme.activity_shape_stroke().into(),
             stroke_width: self.theme.activity_shape_stroke_width(),
             rx: ACTION_RADIUS,
@@ -814,6 +1053,7 @@ impl<'a> ActivityLayoutContext<'a> {
                 &Action {
                     label: label.clone(),
                     shape: ActionShape::Action,
+                    color: None,
                 },
                 rail_x,
                 backward_top,

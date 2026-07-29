@@ -1,0 +1,8 @@
+@startuml
+participant Alice #LightGreen
+participant Bob #FFAAAA
+
+Alice -> Bob : request
+note right of Bob #LightBlue : colored note
+Bob --> Alice : reply
+@enduml
