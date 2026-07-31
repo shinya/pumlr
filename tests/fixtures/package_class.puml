@@ -1,0 +1,19 @@
+@startuml
+package domain {
+  interface Repository {
+    +findById(id: long): Entity
+  }
+  abstract class Entity {
+    +id: long
+  }
+  enum Status {
+    ACTIVE
+    INACTIVE
+  }
+}
+class UserRepository {
+  +findById(id: long): Entity
+}
+Repository <|.. UserRepository
+Entity --> Status
+@enduml

@@ -1,0 +1,12 @@
+@startuml
+[*] --> NotShooting
+
+state NotShooting {
+  [*] --> Idle
+  Idle --> Configuring : EvConfig
+  Configuring --> Idle : EvConfig
+}
+
+NotShooting --> Shooting : EvStartShoot
+Shooting --> NotShooting : EvStopShoot
+@enduml

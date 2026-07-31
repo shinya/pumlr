@@ -10,6 +10,29 @@ pub enum Primitive {
     DashedLine(DashedLine),
     Polygon(Polygon),
     Path(Path),
+    Circle(Circle),
+    Ellipse(Ellipse),
+}
+
+#[derive(Debug, Clone)]
+pub struct Ellipse {
+    pub cx: f32,
+    pub cy: f32,
+    pub rx: f32,
+    pub ry: f32,
+    pub fill: String,
+    pub stroke: String,
+    pub stroke_width: f32,
+}
+
+#[derive(Debug, Clone)]
+pub struct Circle {
+    pub cx: f32,
+    pub cy: f32,
+    pub r: f32,
+    pub fill: String,
+    pub stroke: String,
+    pub stroke_width: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -56,6 +79,7 @@ pub struct Text {
     pub fill: String,
     pub anchor: TextAnchor,
     pub bold: bool,
+    pub italic: bool,
 }
 
 #[derive(Debug, Clone, Copy)]

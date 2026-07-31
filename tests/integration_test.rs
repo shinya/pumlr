@@ -64,14 +64,29 @@ Bob --> Alice : Reply
 }
 
 #[test]
-fn test_render_unsupported_diagram() {
+fn test_render_mindmap_diagram() {
     let input = r#"@startmindmap
 * root
 ** child
 @endmindmap"#;
 
-    let result = render_svg(input);
-    assert!(matches!(result, Err(PlantUmlError::UnsupportedDiagram(_))));
+    let svg = render_svg(input).unwrap();
+    assert!(svg.contains("root"));
+    assert!(svg.contains("child"));
+    // Mind map boxes use the 12.5px corner radius.
+    assert!(svg.contains(r#"rx="12.5""#));
+}
+
+#[test]
+fn test_render_wbs_diagram() {
+    let input = r#"@startwbs
+* root
+** child
+@endwbs"#;
+
+    let svg = render_svg(input).unwrap();
+    assert!(svg.contains("root"));
+    assert!(svg.contains("child"));
 }
 
 #[test]
@@ -524,4 +539,130 @@ fn test_swimlanes() {
         .count();
     assert_eq!(boundary_count, 4, "lane boundary lines");
     assert!(svg.contains("Receive Package"));
+}
+
+#[test]
+fn test_render_class_diagram() {
+    let input = r#"@startuml
+class Animal {
+  +name: String
+  +makeSound(): void
+}
+class Dog
+Animal <|-- Dog
+@enduml"#;
+
+    assert_eq!(
+        pumlr::detect_diagram_type(input),
+        Some(DiagramType::Sequence)
+    ); // refined at render time
+    let svg = render_svg(input).unwrap();
+    assert!(svg.contains("Animal"));
+    assert!(svg.contains("makeSound(): void"));
+    // Class boxes use rx=2.5 rounded corners.
+    assert!(svg.contains(r#"rx="2.5""#));
+}
+
+#[test]
+fn test_render_class_fixtures() {
+    for name in ["simple_class", "relations_class", "package_class"] {
+        let path = format!("tests/fixtures/{}.puml", name);
+        let input = std::fs::read_to_string(&path).unwrap();
+        let svg = render_svg(&input).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert!(svg.starts_with("<svg"), "{name}");
+    }
+}
+
+#[test]
+fn test_render_state_diagram() {
+    let input = r#"@startuml
+[*] --> Idle
+Idle --> Running : start
+Running --> [*]
+@enduml"#;
+
+    let svg = render_svg(input).unwrap();
+    assert!(svg.contains("Idle"));
+    assert!(svg.contains("Running"));
+    assert!(svg.contains("start"));
+    // State boxes use rx=12.5 rounded corners.
+    assert!(svg.contains(r#"rx="12.5""#));
+}
+
+#[test]
+fn test_render_state_fixtures() {
+    for name in ["simple_state", "nested_state"] {
+        let path = format!("tests/fixtures/{}.puml", name);
+        let input = std::fs::read_to_string(&path).unwrap();
+        let svg = render_svg(&input).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert!(svg.starts_with("<svg"), "{name}");
+    }
+}
+
+#[test]
+fn test_render_usecase_diagram() {
+    let input = r#"@startuml
+actor Customer
+usecase (Browse items) as UC1
+Customer --> UC1
+@enduml"#;
+
+    let svg = render_svg(input).unwrap();
+    assert!(svg.contains("Customer"));
+    assert!(svg.contains("Browse items"));
+    assert!(svg.contains("<ellipse"));
+}
+
+#[test]
+fn test_render_usecase_fixtures() {
+    for name in ["simple_usecase", "rect_usecase"] {
+        let path = format!("tests/fixtures/{}.puml", name);
+        let input = std::fs::read_to_string(&path).unwrap();
+        let svg = render_svg(&input).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert!(svg.starts_with("<svg"), "{name}");
+    }
+}
+
+#[test]
+fn test_render_component_diagram() {
+    let input = r#"@startuml
+[Web UI] --> [API Server] : HTTPS
+@enduml"#;
+
+    let svg = render_svg(input).unwrap();
+    assert!(svg.contains("Web UI"));
+    assert!(svg.contains("API Server"));
+    assert!(svg.contains("HTTPS"));
+}
+
+#[test]
+fn test_render_component_fixtures() {
+    for name in ["simple_component", "package_component"] {
+        let path = format!("tests/fixtures/{}.puml", name);
+        let input = std::fs::read_to_string(&path).unwrap();
+        let svg = render_svg(&input).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert!(svg.starts_with("<svg"), "{name}");
+    }
+}
+
+#[test]
+fn test_render_gantt_json_yaml_fixtures() {
+    for name in ["simple_gantt", "simple_json", "simple_yaml"] {
+        let path = format!("tests/fixtures/{}.puml", name);
+        let input = std::fs::read_to_string(&path).unwrap();
+        let svg = render_svg(&input).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert!(svg.starts_with("<svg"), "{name}");
+    }
+}
+
+#[test]
+fn test_render_json_checkbox_bool() {
+    let svg = render_svg("@startjson\n{\"ok\": true}\n@endjson").unwrap();
+    assert!(svg.contains('\u{2611}'));
+}
+
+#[test]
+fn test_render_yaml_plain_bool() {
+    let svg = render_svg("@startyaml\nok: true\n@endyaml").unwrap();
+    assert!(svg.contains(">true<"));
 }

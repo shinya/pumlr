@@ -1,0 +1,12 @@
+@startuml
+class Customer
+class Order
+class LineItem
+class Product
+class PaymentService
+
+Customer "1" --> "0..*" Order : places
+Order *-- LineItem
+LineItem o-- Product
+Order ..> PaymentService : uses
+@enduml

@@ -20,6 +20,8 @@ pub fn render(diagram: &LaidOutDiagram) -> String {
             Primitive::Arrow(a) => svg.arrow(a),
             Primitive::Polygon(p) => svg.polygon(p),
             Primitive::Path(p) => svg.path(p),
+            Primitive::Circle(c) => svg.circle(c),
+            Primitive::Ellipse(e) => svg.ellipse(e),
         }
     }
 
@@ -82,8 +84,13 @@ impl SvgBuilder {
             TextAnchor::End => "end",
         };
         let weight = if t.bold { r#" font-weight="bold""# } else { "" };
+        let style = if t.italic {
+            r#" font-style="italic""#
+        } else {
+            ""
+        };
         self.content.push_str(&format!(
-            r#"<text x="{}" y="{}" font-size="{}" font-family="{}" fill="{}" text-anchor="{}"{}>"#,
+            r#"<text x="{}" y="{}" font-size="{}" font-family="{}" fill="{}" text-anchor="{}"{}{}>"#,
             t.x,
             t.y,
             t.font_size,
@@ -91,6 +98,7 @@ impl SvgBuilder {
             t.fill,
             anchor,
             weight,
+            style,
         ));
         // Handle multi-line text
         let lines: Vec<&str> = t.content.lines().collect();
@@ -198,6 +206,22 @@ impl SvgBuilder {
         self.content.push_str("/>\n");
     }
 
+    fn ellipse(&mut self, e: &Ellipse) {
+        self.content.push_str(&format!(
+            r#"<ellipse cx="{}" cy="{}" rx="{}" ry="{}" fill="{}" stroke="{}" stroke-width="{}"/>"#,
+            e.cx, e.cy, e.rx, e.ry, e.fill, e.stroke, e.stroke_width,
+        ));
+        self.content.push('\n');
+    }
+
+    fn circle(&mut self, c: &Circle) {
+        self.content.push_str(&format!(
+            r#"<circle cx="{}" cy="{}" r="{}" fill="{}" stroke="{}" stroke-width="{}"/>"#,
+            c.cx, c.cy, c.r, c.fill, c.stroke, c.stroke_width,
+        ));
+        self.content.push('\n');
+    }
+
     fn finish(mut self) -> String {
         self.content.push_str("</svg>");
         self.content
@@ -258,6 +282,7 @@ mod tests {
             height: 200.0,
             primitives: vec![Primitive::Text(Text {
                 bold: false,
+                italic: false,
                 x: 10.0,
                 y: 20.0,
                 content: "A <-> B".into(),

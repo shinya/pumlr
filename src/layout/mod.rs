@@ -1,3 +1,12 @@
 pub mod activity;
+pub mod class_diagram;
+pub mod component;
+pub mod data;
+pub mod gantt;
+pub mod graph;
+pub mod mindmap;
 pub mod sequence;
+pub mod state;
 pub mod text_measure;
+pub mod usecase;
+pub mod wbs;

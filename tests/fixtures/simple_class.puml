@@ -1,0 +1,14 @@
+@startuml
+class Animal {
+  +name: String
+  #age: int
+  -id: long
+  +makeSound(): void
+}
+class Dog {
+  +fetch(): void
+}
+class Cat
+Animal <|-- Dog
+Animal <|-- Cat
+@enduml

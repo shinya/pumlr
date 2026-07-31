@@ -1,0 +1,11 @@
+@startjson
+{
+  "name": "pumlr",
+  "version": "0.1.0",
+  "features": ["sequence", "activity", "class"],
+  "author": {
+    "name": "shinya",
+    "active": true
+  }
+}
+@endjson

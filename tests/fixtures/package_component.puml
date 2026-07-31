@@ -1,0 +1,8 @@
+@startuml
+package "Backend" {
+  [API Server]
+  [Worker]
+}
+[Web UI] --> [API Server]
+[API Server] --> [Worker] : jobs
+@enduml

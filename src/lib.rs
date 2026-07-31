@@ -74,7 +74,51 @@ pub fn render_svg_with_options(
             let laid_out = layout::activity::layout_with_theme(&diagram, theme);
             Ok(render::svg::render(&laid_out))
         }
-        other => Err(PlantUmlError::UnsupportedDiagram(format!("{:?}", other))),
+        DiagramType::Class => {
+            let diagram = parser::class_diagram::parse(&preprocessed.body)?;
+            let laid_out = layout::class_diagram::layout_with_theme(&diagram, theme);
+            Ok(render::svg::render(&laid_out))
+        }
+        DiagramType::State => {
+            let diagram = parser::state::parse(&preprocessed.body)?;
+            let laid_out = layout::state::layout_with_theme(&diagram, theme);
+            Ok(render::svg::render(&laid_out))
+        }
+        DiagramType::UseCase => {
+            let diagram = parser::usecase::parse(&preprocessed.body)?;
+            let laid_out = layout::usecase::layout_with_theme(&diagram, theme);
+            Ok(render::svg::render(&laid_out))
+        }
+        DiagramType::Component => {
+            let diagram = parser::component::parse(&preprocessed.body)?;
+            let laid_out = layout::component::layout_with_theme(&diagram, theme);
+            Ok(render::svg::render(&laid_out))
+        }
+        DiagramType::MindMap => {
+            let diagram = parser::tree::parse(&preprocessed.body)?;
+            let laid_out = layout::mindmap::layout_with_theme(&diagram, theme);
+            Ok(render::svg::render(&laid_out))
+        }
+        DiagramType::Wbs => {
+            let diagram = parser::tree::parse(&preprocessed.body)?;
+            let laid_out = layout::wbs::layout_with_theme(&diagram, theme);
+            Ok(render::svg::render(&laid_out))
+        }
+        DiagramType::Gantt => {
+            let diagram = parser::gantt::parse(&preprocessed.body)?;
+            let laid_out = layout::gantt::layout_with_theme(&diagram, theme);
+            Ok(render::svg::render(&laid_out))
+        }
+        DiagramType::Json => {
+            let diagram = parser::data::parse_json(&preprocessed.body)?;
+            let laid_out = layout::data::layout_with_theme(&diagram, true, theme);
+            Ok(render::svg::render(&laid_out))
+        }
+        DiagramType::Yaml => {
+            let diagram = parser::data::parse_yaml(&preprocessed.body)?;
+            let laid_out = layout::data::layout_with_theme(&diagram, false, theme);
+            Ok(render::svg::render(&laid_out))
+        }
     }
 }
 
@@ -90,6 +134,70 @@ pub fn detect_diagram_type(input: &str) -> Option<DiagramType> {
 fn refine_diagram_type(initial: DiagramType, body: &str) -> DiagramType {
     if initial != DiagramType::Sequence {
         return initial;
+    }
+
+    // Component diagram indicators: `[Name]` bracket components or the
+    // `component` keyword.
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("component ") {
+            return DiagramType::Component;
+        }
+        if trimmed.starts_with('[') && trimmed.contains(']') && !trimmed.starts_with("[*]") {
+            return DiagramType::Component;
+        }
+        // `... [X]` as an arrow target.
+        let arrow_part = trimmed.split(" : ").next().unwrap_or(trimmed);
+        if (arrow_part.contains("->") || arrow_part.contains("--"))
+            && arrow_part.split_whitespace().any(|tok| {
+                tok.starts_with('[') && tok.ends_with(']') && tok != "[*]"
+            })
+        {
+            return DiagramType::Component;
+        }
+    }
+
+    // Use case diagram indicators: `usecase` declarations, or arrow lines
+    // whose endpoints use `(text)` / `:name:` forms.
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("usecase ") {
+            return DiagramType::UseCase;
+        }
+        let arrow_part = trimmed.split(" : ").next().unwrap_or(trimmed);
+        if arrow_part.contains("->") || arrow_part.contains("--") {
+            let has_uc_endpoint = arrow_part.split_whitespace().any(|tok| {
+                (tok.starts_with('(') && tok.ends_with(')'))
+                    || (tok.len() >= 3 && tok.starts_with(':') && tok.ends_with(':'))
+            }) || (arrow_part.contains('(') && arrow_part.contains(')'));
+            if has_uc_endpoint && !arrow_part.contains("[*]") {
+                return DiagramType::UseCase;
+            }
+        }
+    }
+
+    // State diagram indicators: `[*]` pseudo states or `state` declarations.
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("[*]")
+            || trimmed.contains("--> [*]")
+            || trimmed.contains("-> [*]")
+            || trimmed.starts_with("state ")
+        {
+            return DiagramType::State;
+        }
+    }
+
+    // Class diagram indicators: declarations or class-style relation arrows.
+    let class_keywords = ["class ", "abstract class ", "interface ", "enum "];
+    let class_arrows = ["<|--", "--|>", "<|..", "..|>", "*--", "--*", "o--", "--o"];
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if class_keywords.iter().any(|kw| trimmed.starts_with(kw))
+            || class_arrows.iter().any(|a| trimmed.contains(a))
+        {
+            return DiagramType::Class;
+        }
     }
 
     // Activity diagram indicators: these keywords appear at the start of a line

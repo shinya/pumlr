@@ -140,6 +140,7 @@ impl<'a> ActivityLayoutContext<'a> {
                 fill: self.theme.activity_text_color().into(),
                 anchor: TextAnchor::Middle,
                 bold: true,
+                italic: false,
             }));
             y += self.measurer.line_height() + TITLE_MARGIN;
         }
@@ -180,6 +181,7 @@ impl<'a> ActivityLayoutContext<'a> {
                 fill: "#888888".into(),
                 anchor: TextAnchor::End,
                 bold: false,
+                italic: false,
             }));
         }
         if let Some(caption) = &diagram.caption {
@@ -192,6 +194,7 @@ impl<'a> ActivityLayoutContext<'a> {
                 fill: self.theme.activity_text_color().into(),
                 anchor: TextAnchor::Middle,
                 bold: false,
+                italic: false,
             }));
             total_height += 20.0;
         }
@@ -205,6 +208,7 @@ impl<'a> ActivityLayoutContext<'a> {
                 fill: "#888888".into(),
                 anchor: TextAnchor::Middle,
                 bold: false,
+                italic: false,
             }));
             total_height += 14.0;
         }
@@ -277,6 +281,7 @@ impl<'a> ActivityLayoutContext<'a> {
                 fill: self.theme.activity_text_color().into(),
                 anchor: TextAnchor::Middle,
                 bold: true,
+                italic: false,
             }));
             header_top += self.measurer.line_height() + TITLE_MARGIN;
         }
@@ -293,6 +298,7 @@ impl<'a> ActivityLayoutContext<'a> {
                     fill: self.theme.activity_text_color().into(),
                     anchor: TextAnchor::Middle,
                     bold: false,
+                    italic: false,
                 }));
             }
         }
@@ -354,6 +360,7 @@ impl<'a> ActivityLayoutContext<'a> {
                             fill: self.theme.activity_text_color().into(),
                             anchor: TextAnchor::Middle,
                             bold: false,
+                            italic: false,
                         }));
                     }
                 }
@@ -796,6 +803,7 @@ impl<'a> ActivityLayoutContext<'a> {
             fill: self.theme.activity_text_color().into(),
             anchor: TextAnchor::Middle,
             bold: false,
+            italic: false,
         }));
 
         y + h
@@ -918,6 +926,7 @@ impl<'a> ActivityLayoutContext<'a> {
                     fill: self.theme.activity_text_color().into(),
                     anchor: TextAnchor::Start,
                     bold: false,
+                    italic: false,
                 }));
             }
 
@@ -1129,6 +1138,7 @@ impl<'a> ActivityLayoutContext<'a> {
                 fill: self.theme.activity_text_color().into(),
                 anchor: TextAnchor::Start,
                 bold: false,
+                italic: false,
             }));
         }
 
@@ -1295,6 +1305,7 @@ impl<'a> ActivityLayoutContext<'a> {
                     fill: self.theme.activity_text_color().into(),
                     anchor: TextAnchor::Start,
                     bold: false,
+                    italic: false,
                 }));
             }
 
@@ -1364,6 +1375,7 @@ impl<'a> ActivityLayoutContext<'a> {
             fill: self.theme.activity_text_color().into(),
             anchor: TextAnchor::Start,
             bold: false,
+            italic: false,
         }));
 
         // Entry: the connector from outside stops at the frame; continue it
@@ -1418,6 +1430,7 @@ impl<'a> ActivityLayoutContext<'a> {
             fill: self.theme.activity_text_color().into(),
             anchor: TextAnchor::Start,
             bold: false,
+            italic: false,
         }));
     }
 
@@ -1479,6 +1492,7 @@ impl<'a> ActivityLayoutContext<'a> {
                 fill: self.theme.activity_text_color().into(),
                 anchor: TextAnchor::Middle,
                 bold: false,
+                italic: false,
             }));
         }
     }
@@ -1509,6 +1523,7 @@ impl<'a> ActivityLayoutContext<'a> {
             fill: self.theme.activity_text_color().into(),
             anchor,
             bold: false,
+            italic: false,
         }));
     }
 
@@ -1534,6 +1549,7 @@ impl<'a> ActivityLayoutContext<'a> {
                 fill: self.theme.activity_text_color().into(),
                 anchor: TextAnchor::Start,
                 bold: false,
+                italic: false,
             }));
         }
     }
@@ -1664,6 +1680,7 @@ impl<'a> ActivityLayoutContext<'a> {
             fill: self.theme.activity_edge_color().into(),
             anchor: TextAnchor::Middle,
             bold: false,
+            italic: false,
         }));
     }
 
@@ -1707,6 +1724,14 @@ impl<'a> ActivityLayoutContext<'a> {
                     min_x = min_x.min(dl.x1.min(dl.x2));
                     max_x = max_x.max(dl.x1.max(dl.x2));
                 }
+                Primitive::Circle(c) => {
+                    min_x = min_x.min(c.cx - c.r);
+                    max_x = max_x.max(c.cx + c.r);
+                }
+                Primitive::Ellipse(e) => {
+                    min_x = min_x.min(e.cx - e.rx);
+                    max_x = max_x.max(e.cx + e.rx);
+                }
             }
         }
         (min_x, max_x)
@@ -1738,6 +1763,8 @@ impl<'a> ActivityLayoutContext<'a> {
                     dl.x1 += dx;
                     dl.x2 += dx;
                 }
+                Primitive::Circle(c) => c.cx += dx,
+                Primitive::Ellipse(e) => e.cx += dx,
             }
         }
     }

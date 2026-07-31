@@ -1,0 +1,6 @@
+@startuml
+[Web UI] --> [API Server] : HTTPS
+[API Server] --> [Database] : SQL
+interface Auth
+Auth - [API Server]
+@enduml

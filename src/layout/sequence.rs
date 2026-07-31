@@ -154,6 +154,7 @@ impl<'a> LayoutContext<'a> {
         if let Some(header) = &diagram.header {
             self.fg_primitives.push(Primitive::Text(Text {
                 bold: false,
+                italic: false,
                 x: self.calculate_total_width() - 4.0,
                 y: self.y_cursor + 5.0,
                 content: header.clone(),
@@ -230,6 +231,7 @@ impl<'a> LayoutContext<'a> {
         if let Some(caption) = &diagram.caption {
             self.fg_primitives.push(Primitive::Text(Text {
                 bold: false,
+                italic: false,
                 x: self.calculate_total_width() / 2.0,
                 y: self.y_cursor + 6.0,
                 content: caption.clone(),
@@ -243,6 +245,7 @@ impl<'a> LayoutContext<'a> {
         if let Some(footer) = &diagram.footer {
             self.fg_primitives.push(Primitive::Text(Text {
                 bold: false,
+                italic: false,
                 x: self.calculate_total_width() / 2.0,
                 y: self.y_cursor + 4.0,
                 content: footer.clone(),
@@ -299,6 +302,7 @@ impl<'a> LayoutContext<'a> {
             if !pbox.title.is_empty() {
                 self.box_primitives.push(Primitive::Text(Text {
                     bold: true,
+                    italic: false,
                     x: (left + right) / 2.0,
                     y: top + 13.0,
                     content: pbox.title.clone(),
@@ -515,6 +519,7 @@ impl<'a> LayoutContext<'a> {
         let center_x = total_width / 2.0;
         self.fg_primitives.push(Primitive::Text(Text {
             bold: true,
+            italic: false,
             x: center_x,
             y: self.y_cursor + self.title_measurer.line_height(),
             content: title.to_string(),
@@ -564,6 +569,7 @@ impl<'a> LayoutContext<'a> {
                 ));
                 prims.push(Primitive::Text(Text {
                     bold: false,
+                    italic: false,
                     x: p.x_center,
                     y: label_baseline,
                     content: p.label.clone(),
@@ -649,6 +655,7 @@ impl<'a> LayoutContext<'a> {
                 }
                 prims.push(Primitive::Text(Text {
                     bold: false,
+                    italic: false,
                     x: cx,
                     y: label_baseline,
                     content: p.label.clone(),
@@ -701,6 +708,7 @@ impl<'a> LayoutContext<'a> {
                 }));
                 prims.push(Primitive::Text(Text {
                     bold: false,
+                    italic: false,
                     x: p.x_center - QUEUE_CAP,
                     y: cy + 5.0,
                     content: p.label.clone(),
@@ -733,6 +741,7 @@ impl<'a> LayoutContext<'a> {
                 }
                 prims.push(Primitive::Text(Text {
                     bold: false,
+                    italic: false,
                     x: front_x + front_w / 2.0,
                     y: front_y + box_h / 2.0 + self.title_measurer.line_height() * 0.32,
                     content: p.label.clone(),
@@ -787,6 +796,7 @@ impl<'a> LayoutContext<'a> {
                 }));
                 prims.push(Primitive::Text(Text {
                     bold: false,
+                    italic: false,
                     x: cx,
                     y: label_baseline,
                     content: p.label.clone(),
@@ -810,6 +820,7 @@ impl<'a> LayoutContext<'a> {
                 }));
                 prims.push(Primitive::Text(Text {
                     bold: false,
+                    italic: false,
                     x: p.x_center,
                     y: box_y + box_h / 2.0 + self.title_measurer.line_height() * 0.32,
                     content: p.label.clone(),
@@ -1049,6 +1060,7 @@ impl<'a> LayoutContext<'a> {
             }));
             self.fg_primitives.push(Primitive::Text(Text {
                 bold: false,
+                italic: false,
                 x: cx,
                 y: box_top + h / 2.0 + self.title_measurer.line_height() * 0.32,
                 content: label_text,
@@ -1116,6 +1128,7 @@ impl<'a> LayoutContext<'a> {
             let label_x = if from_x <= to_x { x1 + 7.0 } else { x2 + 16.0 };
             self.fg_primitives.push(Primitive::Text(Text {
                 bold: false,
+                italic: false,
                 x: label_x,
                 y: y - 5.0,
                 content: label.to_string(),
@@ -1177,6 +1190,7 @@ impl<'a> LayoutContext<'a> {
         if !label.is_empty() {
             self.fg_primitives.push(Primitive::Text(Text {
                 bold: false,
+                italic: false,
                 x: x0 + 7.0,
                 y: y - 5.0,
                 content: label.to_string(),
@@ -1245,6 +1259,7 @@ impl<'a> LayoutContext<'a> {
         }));
         self.fg_primitives.push(Primitive::Text(Text {
             bold: true,
+            italic: false,
             x: left + 13.0,
             y: top + 13.5,
             content: "ref".into(),
@@ -1257,6 +1272,7 @@ impl<'a> LayoutContext<'a> {
         for (i, line) in lines.iter().enumerate() {
             self.fg_primitives.push(Primitive::Text(Text {
                 bold: false,
+                italic: false,
                 x: (left + right) / 2.0,
                 y: top + tab_h + 13.0 + i as f32 * 14.0,
                 content: line.to_string(),
@@ -1374,6 +1390,7 @@ impl<'a> LayoutContext<'a> {
         // Note text
         self.fg_primitives.push(Primitive::Text(Text {
             bold: false,
+            italic: false,
             x: x + NOTE_PADDING + 1.0,
             y: y + NOTE_PADDING + self.measurer.line_height() * 0.8,
             content: note.text.clone(),
@@ -1473,6 +1490,7 @@ impl<'a> LayoutContext<'a> {
         // Group kind (bold, inside the tab)
         self.group_primitives.push(Primitive::Text(Text {
             bold: true,
+            italic: false,
             x: min_x + 15.0,
             y: group_start_y + 13.5,
             content: kind.to_string(),
@@ -1486,6 +1504,7 @@ impl<'a> LayoutContext<'a> {
         if !group.label.is_empty() {
             self.group_primitives.push(Primitive::Text(Text {
                 bold: true,
+                italic: false,
                 x: min_x + tab_width + 15.0,
                 y: group_start_y + 12.6,
                 content: format!("[{}]", group.label),
@@ -1522,6 +1541,7 @@ impl<'a> LayoutContext<'a> {
 
             self.group_primitives.push(Primitive::Text(Text {
                 bold: true,
+                italic: false,
                 x: min_x + 5.0,
                 y: divider_y + 10.6,
                 content: else_label,
@@ -1570,6 +1590,7 @@ impl<'a> LayoutContext<'a> {
         // Label text (bold, centered)
         self.fg_primitives.push(Primitive::Text(Text {
             bold: true,
+            italic: false,
             x: center_x,
             y: y + 4.5,
             content: sep.label.clone(),
@@ -1589,6 +1610,7 @@ impl<'a> LayoutContext<'a> {
             let total_width = self.calculate_total_width();
             self.fg_primitives.push(Primitive::Text(Text {
                 bold: false,
+                italic: false,
                 x: total_width / 2.0,
                 y: self.y_cursor + self.measurer.line_height() * 0.7,
                 content: text.clone(),

@@ -1,0 +1,10 @@
+@startuml
+left to right direction
+actor Guest
+rectangle Checkout {
+  usecase "Pay" as UC1
+  usecase "Get help" as UC2
+}
+Guest --> UC1
+Guest --> UC2
+@enduml

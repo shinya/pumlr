@@ -11,7 +11,8 @@ theme.
 
 ## Status
 
-Sequence diagrams and activity diagrams are supported.
+Nine diagram types are supported: sequence, activity, class, state,
+use case, component, mind map / WBS, Gantt, and JSON / YAML data diagrams.
 
 ### Sequence diagrams
 
@@ -42,6 +43,60 @@ Sequence diagrams and activity diagrams are supported.
 - `fork / fork again / end fork`, `partition { ... }`
 - Swimlanes (`|Lane|`, top-level lane switching)
 - Edge labels (`-> label;`), notes, title
+
+### Class diagrams
+
+- `class` / `abstract class` / `interface` / `enum` with stereotype icons
+  (C / A / I / E circles), fields and methods with visibility icons
+  (`+` / `-` / `#` / `~`), `Class : member` syntax, aliases and fill colors
+- Relations: extension `<|--`, realization `<|..`, composition `*--`,
+  aggregation `o--`, association `-->`, dependency `..>`, with labels and
+  cardinalities (`"1" --> "0..*"`), direction hints (`-down->`)
+- `package Name { ... }` folder frames
+
+### State diagrams
+
+- `[*]` start / end pseudo states, transitions with labels,
+  state descriptions (`State : text`)
+- Composite states (`state X { ... }`, nested), `state "Long" as S`
+- Bidirectional transition pairs are drawn as separated parallel edges;
+  straight-line routing detours around boxes in the way
+
+### Use case diagrams
+
+- `actor` (stick figure) and `usecase` (ellipse sized like PlantUML's),
+  inline `:Actor:` / `(Use case)` forms, aliases
+- Associations with `<<include>>` / `<<extend>>` labels (rendered as
+  «guillemets»), dashed `..>` arrows
+- `rectangle Name { ... }` containers, `left to right direction`
+
+### Component diagrams
+
+- `[Component]` boxes with the component icon, `component` / `interface`
+  keywords, lollipop interfaces (`Auth - [API]`)
+- `package` / `node` / `folder` / `cloud` / `database` / `frame` containers
+- Arrows with labels, dashed dependencies
+
+### Mind maps & WBS
+
+- `@startmindmap` / `@startwbs` with `*` depth markers, `*[#color]` node
+  colors, `*_` boxless nodes
+- Mind map: root at the left, bezier connectors, subtree centering
+- WBS: root on top, level-1 row, deeper levels as indented vertical lists
+
+### Gantt charts
+
+- `Project starts <date>`, `[Task] starts <date> and lasts N days`,
+  `[Task] starts at [Other]'s end` dependency chains with elbow arrows
+- Day-grid timeline with weekday / day headers (mirrored footer), month
+  spans, task bars with inline labels
+
+### JSON / YAML data diagrams
+
+- `@startjson` (full JSON) and `@startyaml` (a practical YAML subset:
+  nested maps, scalar lists, scalars)
+- Two-column tables with bold keys, single-column array boxes, dashed
+  bullet links to nested boxes, `☑ true` checkboxes for JSON booleans
 
 ## Usage
 
