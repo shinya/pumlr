@@ -62,6 +62,11 @@ fn scalar_display(value: &DataValue, json_style: bool) -> String {
                 "\u{2610} false".to_string()
             }
         }
+        // Multi-line strings (YAML block scalars) render on a single row:
+        // the Java PlantUML reference keeps row height at ROW_H and emits the
+        // raw newline inside one <text> element, which SVG renderers collapse
+        // to a space.
+        DataValue::String(s) if s.contains('\n') => s.replace('\n', " "),
         other => other.scalar_text(),
     }
 }
@@ -174,6 +179,7 @@ fn layout_value(
                 anchor: TextAnchor::Start,
                 bold: true,
                 italic: false,
+                underline: false,
             }));
         }
         if !row.value_text.is_empty() {
@@ -187,6 +193,7 @@ fn layout_value(
                 anchor: TextAnchor::Start,
                 bold: false,
                 italic: false,
+                underline: false,
             }));
         }
     }

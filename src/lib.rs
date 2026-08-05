@@ -166,10 +166,14 @@ fn refine_diagram_type(initial: DiagramType, body: &str) -> DiagramType {
         }
         let arrow_part = trimmed.split(" : ").next().unwrap_or(trimmed);
         if arrow_part.contains("->") || arrow_part.contains("--") {
+            // A `(...)` endpoint sits at the start or end of the relation
+            // line; parens glued to the arrow (`Foo ()-- Bar` lollipops in
+            // class diagrams) must not match.
             let has_uc_endpoint = arrow_part.split_whitespace().any(|tok| {
                 (tok.starts_with('(') && tok.ends_with(')'))
                     || (tok.len() >= 3 && tok.starts_with(':') && tok.ends_with(':'))
-            }) || (arrow_part.contains('(') && arrow_part.contains(')'));
+            }) || arrow_part.starts_with('(')
+                || arrow_part.ends_with(')');
             if has_uc_endpoint && !arrow_part.contains("[*]") {
                 return DiagramType::UseCase;
             }

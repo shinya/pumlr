@@ -1,0 +1,10 @@
+@startyaml
+users:
+  - name: alice
+    role: admin
+  - name: bob
+    role: dev
+tags:
+  - x
+  - y
+@endyaml

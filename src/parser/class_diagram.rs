@@ -9,8 +9,8 @@ pub fn parse(body: &str) -> Result<ClassDiagram, PlantUmlError> {
         packages: Vec::new(),
         relations: Vec::new(),
     };
-    // Stack of package names we are currently inside (support one level deep,
-    // nested packages are flattened into the innermost one).
+    // Stack of package indices we are currently inside (nested packages keep
+    // their nesting via `PackageDef::parent`).
     let mut package_stack: Vec<usize> = Vec::new();
     // When inside a `class Foo { ... }` body, index of the class being filled.
     let mut open_class: Option<usize> = None;
@@ -66,6 +66,7 @@ pub fn parse(body: &str) -> Result<ClassDiagram, PlantUmlError> {
             diagram.packages.push(PackageDef {
                 name,
                 classes: Vec::new(),
+                parent: package_stack.last().copied(),
             });
             if rest.trim_end().ends_with('{') {
                 package_stack.push(diagram.packages.len() - 1);
@@ -89,9 +90,16 @@ pub fn parse(body: &str) -> Result<ClassDiagram, PlantUmlError> {
         }
 
         // Relation line?
-        if let Some(rel) = parse_relation(line) {
+        if let Some((rel, left_lollipop, right_lollipop)) = parse_relation(line) {
             ensure_class(&mut diagram, &rel.left, &package_stack);
             ensure_class(&mut diagram, &rel.right, &package_stack);
+            // `Foo ()-- Bar` displays Foo as a lollipop circle.
+            if left_lollipop {
+                set_circle_kind(&mut diagram, &rel.left);
+            }
+            if right_lollipop {
+                set_circle_kind(&mut diagram, &rel.right);
+            }
             diagram.relations.push(rel);
             continue;
         }
@@ -135,6 +143,15 @@ fn parse_class_keyword(line: &str) -> Option<(ClassKind, &str)> {
     }
     if let Some(rest) = strip_keyword(line, "enum") {
         return Some((ClassKind::Enum, rest));
+    }
+    if let Some(rest) = strip_keyword(line, "circle") {
+        return Some((ClassKind::Circle, rest));
+    }
+    // `() "Name" as N` — lollipop interface shorthand.
+    if let Some(rest) = line.strip_prefix("()") {
+        if rest.starts_with(' ') || rest.starts_with('\t') {
+            return Some((ClassKind::Circle, rest.trim_start()));
+        }
     }
     None
 }
@@ -219,6 +236,13 @@ fn declare_class(
     Ok((diagram.classes.len() - 1, has_body))
 }
 
+/// Mark an existing class as a lollipop circle (used by `()`-decorated arrows).
+fn set_circle_kind(diagram: &mut ClassDiagram, name: &str) {
+    if let Some(class) = diagram.classes.iter_mut().find(|c| c.name == name) {
+        class.kind = ClassKind::Circle;
+    }
+}
+
 fn ensure_class(diagram: &mut ClassDiagram, name: &str, package_stack: &[usize]) {
     if diagram.classes.iter().any(|c| c.name == name) {
         return;
@@ -268,26 +292,44 @@ fn parse_member(text: &str) -> Member {
 }
 
 /// Try to parse a relation line: `A "card" ARROW "card" B : label`.
-fn parse_relation(line: &str) -> Option<Relation> {
+/// Returns the relation plus whether the left/right entity is displayed as a
+/// lollipop circle (`()`-decorated arrow, e.g. `Foo ()-- Bar`).
+fn parse_relation(line: &str) -> Option<(Relation, bool, bool)> {
     // Split off the label first.
     let (line_part, label) = split_label(line);
 
     let tokens = tokenize_relation(line_part)?;
-    let (left, left_card, arrow, right_card, right) = tokens;
+    let (left, left_card, mut arrow, right_card, right) = tokens;
+
+    // `()` glued to the arrow marks that end's entity as a lollipop.
+    let mut left_lollipop = false;
+    let mut right_lollipop = false;
+    if let Some(rest) = arrow.strip_prefix("()") {
+        left_lollipop = true;
+        arrow = rest.to_string();
+    }
+    if let Some(rest) = arrow.strip_suffix("()") {
+        right_lollipop = true;
+        arrow = rest.to_string();
+    }
 
     let (left_marker, right_marker, dashed, rank_len) = parse_arrow(&arrow)?;
 
-    Some(Relation {
-        left,
-        right,
-        left_marker,
-        right_marker,
-        dashed,
-        rank_len,
-        label,
-        left_card,
-        right_card,
-    })
+    Some((
+        Relation {
+            left,
+            right,
+            left_marker,
+            right_marker,
+            dashed,
+            rank_len,
+            label,
+            left_card,
+            right_card,
+        },
+        left_lollipop,
+        right_lollipop,
+    ))
 }
 
 /// Split `... : label` (label part is optional).
@@ -366,7 +408,7 @@ fn is_arrow_token(token: &str) -> bool {
     token.chars().all(|c| {
         matches!(
             c,
-            '-' | '.' | '<' | '>' | '|' | '*' | 'o' | '#' | 'x' | '+' | '^'
+            '-' | '.' | '<' | '>' | '|' | '*' | 'o' | '#' | 'x' | '+' | '^' | '(' | ')'
         )
     }) || is_arrow_with_direction(token)
 }
@@ -527,6 +569,60 @@ mod tests {
         let d = parse("class Animal\nAnimal : +name: String\nAnimal : +run(): void\n").unwrap();
         assert_eq!(d.classes[0].fields.len(), 1);
         assert_eq!(d.classes[0].methods.len(), 1);
+    }
+
+    #[test]
+    fn test_static_member() {
+        let m = parse_member("{static} count: int");
+        assert!(m.is_static);
+        assert!(!m.is_abstract);
+        assert_eq!(m.text, "count: int");
+        let m = parse_member("{static} +instance(): Counter");
+        assert!(m.is_static);
+        assert_eq!(m.visibility, Some(Visibility::Public));
+        assert_eq!(m.text, "instance(): Counter");
+    }
+
+    #[test]
+    fn test_nested_packages() {
+        let d = parse(
+            "package outer {\n  package inner {\n    class A\n  }\n  class B\n}\nclass C\n",
+        )
+        .unwrap();
+        assert_eq!(d.packages.len(), 2);
+        assert_eq!(d.packages[0].name, "outer");
+        assert_eq!(d.packages[0].parent, None);
+        assert_eq!(d.packages[1].name, "inner");
+        assert_eq!(d.packages[1].parent, Some(0));
+        assert_eq!(d.packages[0].classes, vec!["B"]);
+        assert_eq!(d.packages[1].classes, vec!["A"]);
+    }
+
+    #[test]
+    fn test_circle_declarations() {
+        let d = parse("circle Direct\n() \"Runnable\" as R\nR - Counter\n").unwrap();
+        assert_eq!(d.classes[0].kind, ClassKind::Circle);
+        assert_eq!(d.classes[0].name, "Direct");
+        assert_eq!(d.classes[1].kind, ClassKind::Circle);
+        assert_eq!(d.classes[1].name, "R");
+        assert_eq!(d.classes[1].display_name, "Runnable");
+        let r = &d.relations[0];
+        assert_eq!(r.left, "R");
+        assert_eq!(r.right, "Counter");
+        assert_eq!(r.rank_len, 1);
+    }
+
+    #[test]
+    fn test_lollipop_arrow() {
+        let d = parse("class Bar\nBaz ()-- Bar\n").unwrap();
+        let baz = d.classes.iter().find(|c| c.name == "Baz").unwrap();
+        assert_eq!(baz.kind, ClassKind::Circle);
+        assert_eq!(d.relations.len(), 1);
+        assert_eq!(d.relations[0].left, "Baz");
+        // Right-side variant.
+        let d = parse("class Bar\nBar --() Qux\n").unwrap();
+        let qux = d.classes.iter().find(|c| c.name == "Qux").unwrap();
+        assert_eq!(qux.kind, ClassKind::Circle);
     }
 
     #[test]

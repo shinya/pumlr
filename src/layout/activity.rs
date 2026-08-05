@@ -89,6 +89,10 @@ struct ActivityLayoutContext<'a> {
     measurer: &'a TextMeasurer,
     label_measurer: &'a TextMeasurer,
     primitives: Vec<Primitive>,
+    /// Swimlane names in document order (lane mode only).
+    lane_names: Vec<String>,
+    /// Swimlane column centers (lane mode only).
+    lane_centers: Vec<f32>,
 }
 
 impl<'a> ActivityLayoutContext<'a> {
@@ -102,15 +106,13 @@ impl<'a> ActivityLayoutContext<'a> {
             measurer,
             label_measurer,
             primitives: Vec::new(),
+            lane_names: Vec::new(),
+            lane_centers: Vec::new(),
         }
     }
 
     fn layout(&mut self, diagram: &ActivityDiagram) -> LaidOutDiagram {
-        if diagram
-            .elements
-            .iter()
-            .any(|e| matches!(e, ActivityElement::LaneChange(_)))
-        {
+        if contains_lane_change(&diagram.elements) {
             return self.layout_lanes(diagram);
         }
 
@@ -141,6 +143,7 @@ impl<'a> ActivityLayoutContext<'a> {
                 anchor: TextAnchor::Middle,
                 bold: true,
                 italic: false,
+                underline: false,
             }));
             y += self.measurer.line_height() + TITLE_MARGIN;
         }
@@ -182,6 +185,7 @@ impl<'a> ActivityLayoutContext<'a> {
                 anchor: TextAnchor::End,
                 bold: false,
                 italic: false,
+                underline: false,
             }));
         }
         if let Some(caption) = &diagram.caption {
@@ -195,6 +199,7 @@ impl<'a> ActivityLayoutContext<'a> {
                 anchor: TextAnchor::Middle,
                 bold: false,
                 italic: false,
+                underline: false,
             }));
             total_height += 20.0;
         }
@@ -209,6 +214,7 @@ impl<'a> ActivityLayoutContext<'a> {
                 anchor: TextAnchor::Middle,
                 bold: false,
                 italic: false,
+                underline: false,
             }));
             total_height += 14.0;
         }
@@ -224,37 +230,48 @@ impl<'a> ActivityLayoutContext<'a> {
     /// (`|Lane|` switches it); each lane is a column sized to its content,
     /// with an 18px title at the top and 1.5px black boundary lines.
     fn layout_lanes(&mut self, diagram: &ActivityDiagram) -> LaidOutDiagram {
-        // Assign each top-level element to a lane
+        // Lanes in document order, including switches inside branches
         let mut lane_names: Vec<String> = Vec::new();
+        collect_lane_names(&diagram.elements, &mut lane_names);
+        if lane_names.is_empty() {
+            lane_names.push(String::new());
+        }
+
+        // Assign each top-level element to a lane; a switch inside a block
+        // carries over to the elements after it, like in PlantUML.
         let mut assignment: Vec<(usize, &ActivityElement)> = Vec::new();
         let mut current = 0usize;
         for e in &diagram.elements {
             if let ActivityElement::LaneChange(name) = e {
-                current = match lane_names.iter().position(|n| n == name) {
-                    Some(i) => i,
-                    None => {
-                        lane_names.push(name.clone());
-                        lane_names.len() - 1
-                    }
-                };
-            } else {
-                if lane_names.is_empty() {
-                    lane_names.push(String::new());
+                if let Some(i) = lane_names.iter().position(|n| n == name) {
+                    current = i;
                 }
+            } else {
                 assignment.push((current, e));
+                if let Some(name) = last_lane_change(e) {
+                    if let Some(i) = lane_names.iter().position(|n| n == name) {
+                        current = i;
+                    }
+                }
             }
         }
 
-        // Lane widths: max of content and title, plus padding
-        let mut lane_w = vec![0.0f32; lane_names.len()];
+        self.lane_names = lane_names;
+        let n_lanes = self.lane_names.len();
+
+        // Lane widths: max of content and title, plus padding. Blocks with
+        // lane switches inside spread their width across the lanes they use.
+        let mut lane_w = vec![0.0f32; n_lanes];
         for (lane, e) in &assignment {
             if matches!(e, ActivityElement::Arrow(_)) {
                 continue;
             }
-            let sub = self.measure_element(e);
-            lane_w[*lane] = lane_w[*lane].max(sub.width);
+            let ws = self.element_lane_widths(e, *lane, n_lanes);
+            for (slot, w) in lane_w.iter_mut().zip(&ws) {
+                *slot = slot.max(*w);
+            }
         }
-        for (i, name) in lane_names.iter().enumerate() {
+        for (i, name) in self.lane_names.iter().enumerate() {
             let title_w = self.measurer.measure_width(name) * (LANE_TITLE_FONT_SIZE / FONT_SIZE);
             lane_w[i] = lane_w[i].max(title_w) + LANE_PADDING * 2.0;
         }
@@ -267,6 +284,7 @@ impl<'a> ActivityLayoutContext<'a> {
         let centers: Vec<f32> = (0..lane_w.len())
             .map(|i| (boundaries[i] + boundaries[i + 1]) / 2.0)
             .collect();
+        self.lane_centers = centers.clone();
         let total_width = boundaries.last().unwrap() + DIAGRAM_MARGIN;
 
         // Optional title above the lane headers
@@ -282,12 +300,13 @@ impl<'a> ActivityLayoutContext<'a> {
                 anchor: TextAnchor::Middle,
                 bold: true,
                 italic: false,
+                underline: false,
             }));
             header_top += self.measurer.line_height() + TITLE_MARGIN;
         }
 
         // Lane titles
-        for (i, name) in lane_names.iter().enumerate() {
+        for (i, name) in self.lane_names.iter().enumerate() {
             if !name.is_empty() {
                 self.primitives.push(Primitive::Text(Text {
                     x: centers[i],
@@ -299,6 +318,7 @@ impl<'a> ActivityLayoutContext<'a> {
                     anchor: TextAnchor::Middle,
                     bold: false,
                     italic: false,
+                    underline: false,
                 }));
             }
         }
@@ -326,47 +346,11 @@ impl<'a> ActivityLayoutContext<'a> {
                         self.draw_down_arrow(cx, y, y + gap, pending_label.as_deref());
                     }
                 } else {
-                    // Cross-lane elbow: drop 5, over, and down into the element
-                    self.primitives.push(Primitive::Path(Path {
-                        d: format!(
-                            "M {},{} L {},{} L {},{} L {},{}",
-                            prev_cx,
-                            y,
-                            prev_cx,
-                            y + 5.0,
-                            cx,
-                            y + 5.0,
-                            cx,
-                            y + gap,
-                        ),
-                        fill: "none".into(),
-                        stroke: self.theme.activity_edge_color().into(),
-                        stroke_width: 1.0,
-                        dashed: false,
-                    }));
-                    self.primitives.push(Primitive::Polygon(Polygon {
-                        points: concave_head(cx, y + gap, 0.0, 1.0),
-                        fill: self.theme.activity_edge_color().into(),
-                        stroke: "none".into(),
-                        stroke_width: 0.0,
-                    }));
-                    if let Some(label) = &pending_label {
-                        self.primitives.push(Primitive::Text(Text {
-                            x: (prev_cx + cx) / 2.0,
-                            y: y + 1.0,
-                            content: label.clone(),
-                            font_size: LABEL_FONT_SIZE,
-                            font_family: FONT_FAMILY.into(),
-                            fill: self.theme.activity_text_color().into(),
-                            anchor: TextAnchor::Middle,
-                            bold: false,
-                            italic: false,
-                        }));
-                    }
+                    self.draw_cross_elbow(prev_cx, cx, y, y + gap, pending_label.as_deref());
                 }
                 y += gap;
             }
-            y = self.draw_element(element, cx, y);
+            y = self.draw_lane_item(element, *lane, cx, y);
             prev = Some((*lane, cx));
             pending_label = None;
         }
@@ -389,6 +373,547 @@ impl<'a> ActivityLayoutContext<'a> {
             width: total_width,
             height: total_height,
             primitives: std::mem::take(&mut self.primitives),
+        }
+    }
+
+    // --- Lane-aware layout (swimlane switches inside if/while/repeat) ---
+
+    /// Per-lane width contributions of one element placed with `entry` as the
+    /// current lane. Blocks with lane switches inside spread across the lanes
+    /// they use; everything else contributes only to its own lane.
+    fn element_lane_widths(&self, element: &ActivityElement, entry: usize, n: usize) -> Vec<f32> {
+        match element {
+            ActivityElement::If(block) if if_has_lane_changes(block) => {
+                let then_items = lane_items(&block.then_elements, entry, &self.lane_names);
+                let else_items = lane_items(&block.else_elements, entry, &self.lane_names);
+                let tw = self.items_lane_widths(&then_items, n);
+                let ew = self.items_lane_widths(&else_items, n);
+                // Lanes used by both branches hold their columns side by side
+                let mut w: Vec<f32> = tw
+                    .iter()
+                    .zip(&ew)
+                    .map(|(t, e)| {
+                        if *t > 0.0 && *e > 0.0 {
+                            t + BRANCH_GAP + e
+                        } else {
+                            t.max(*e)
+                        }
+                    })
+                    .collect();
+                // Entry lane also holds the hexagon/merge column and the
+                // bypass rail of an empty branch
+                w[entry] = (w[entry] + BRANCH_GAP)
+                    .max(self.hex_width(&block.condition))
+                    .max(MERGE_HALF * 2.0);
+                w
+            }
+            ActivityElement::While(block) if contains_lane_change(&block.elements) => {
+                let items = lane_items(&block.elements, entry, &self.lane_names);
+                let mut w = self.items_lane_widths(&items, n);
+                w[entry] =
+                    w[entry].max(self.hex_width(&block.condition)) + WHILE_RAIL_MARGIN * 2.0;
+                w
+            }
+            ActivityElement::Repeat(block) if contains_lane_change(&block.elements) => {
+                let items = lane_items(&block.elements, entry, &self.lane_names);
+                let mut w = self.items_lane_widths(&items, n);
+                let content_half = w[entry].max(self.hex_width(&block.condition)) / 2.0;
+                let rail = match &block.backward {
+                    Some(label) => content_half + REPEAT_RAIL_GAP + self.backward_size(label).0,
+                    None => content_half + WHILE_RAIL_MARGIN,
+                };
+                w[entry] = rail * 2.0;
+                w
+            }
+            _ => {
+                let mut w = vec![0.0f32; n];
+                w[entry] = self.measure_element(element).width;
+                w
+            }
+        }
+    }
+
+    /// Max per-lane width over a flattened item sequence.
+    fn items_lane_widths(&self, items: &[(usize, &ActivityElement)], n: usize) -> Vec<f32> {
+        let mut w = vec![0.0f32; n];
+        for (lane, e) in items {
+            if matches!(e, ActivityElement::Arrow(_)) {
+                continue;
+            }
+            let ew = self.element_lane_widths(e, *lane, n);
+            for (slot, x) in w.iter_mut().zip(&ew) {
+                *slot = slot.max(*x);
+            }
+        }
+        w
+    }
+
+    /// Draw one lane-mode element at column `x`: blocks with lane switches
+    /// inside get the lane-aware layout, everything else the regular one.
+    fn draw_lane_item(&mut self, element: &ActivityElement, lane: usize, x: f32, y: f32) -> f32 {
+        match element {
+            ActivityElement::If(block) if if_has_lane_changes(block) => {
+                self.draw_if_lanes(block, lane, x, y)
+            }
+            ActivityElement::While(block) if contains_lane_change(&block.elements) => {
+                self.draw_while_lanes(block, lane, x, y)
+            }
+            ActivityElement::Repeat(block) if contains_lane_change(&block.elements) => {
+                self.draw_repeat_lanes(block, lane, x, y)
+            }
+            _ => self.draw_element(element, x, y),
+        }
+    }
+
+    /// Draw lane-assigned items top to bottom from `start_y`; items of lane
+    /// `l` sit at `xs[l]`, hops between lanes are drawn as elbows. The edge
+    /// into the first item is drawn by the caller. Returns the end y and the
+    /// x of the last drawn item.
+    fn draw_lane_flow(
+        &mut self,
+        items: &[(usize, &ActivityElement)],
+        xs: &[f32],
+        start_y: f32,
+    ) -> (f32, f32) {
+        let mut y = start_y;
+        let mut prev_x: Option<f32> = None;
+        let mut pending_label: Option<String> = None;
+        for (lane, element) in items {
+            if let ActivityElement::Arrow(arrow) = element {
+                pending_label = Some(arrow.label.clone());
+                continue;
+            }
+            let x = xs[*lane];
+            if let Some(px) = prev_x {
+                let gap = if pending_label.is_some() {
+                    ARROW_SPACING * 2.0
+                } else {
+                    ARROW_SPACING
+                };
+                if (px - x).abs() < 0.5 {
+                    self.draw_down_arrow(x, y, y + gap, pending_label.as_deref());
+                } else {
+                    self.draw_cross_elbow(px, x, y, y + gap, pending_label.as_deref());
+                }
+                y += gap;
+            }
+            pending_label = None;
+            y = self.draw_lane_item(element, *lane, x, y);
+            prev_x = Some(x);
+        }
+        (y, prev_x.unwrap_or(0.0))
+    }
+
+    /// If/else with lane switches inside: the hexagon and the merge diamond
+    /// stay in the entry lane; each branch element sits in its own lane's
+    /// column (branches sharing a lane get side-by-side columns there).
+    fn draw_if_lanes(&mut self, block: &IfBlock, entry: usize, entry_x: f32, y: f32) -> f32 {
+        let n = self.lane_names.len();
+        let then_items = lane_items(&block.then_elements, entry, &self.lane_names);
+        let else_items = lane_items(&block.else_elements, entry, &self.lane_names);
+        let tw = self.items_lane_widths(&then_items, n);
+        let ew = self.items_lane_widths(&else_items, n);
+
+        // Column x per lane and branch
+        let mut centers = self.lane_centers.clone();
+        centers[entry] = entry_x;
+        let mut txs = vec![0.0f32; n];
+        let mut exs = vec![0.0f32; n];
+        for l in 0..n {
+            if tw[l] > 0.0 && ew[l] > 0.0 {
+                let left = centers[l] - (tw[l] + BRANCH_GAP + ew[l]) / 2.0;
+                txs[l] = left + tw[l] / 2.0;
+                exs[l] = left + tw[l] + BRANCH_GAP + ew[l] / 2.0;
+            } else {
+                txs[l] = centers[l];
+                exs[l] = centers[l];
+            }
+        }
+
+        // Condition hexagon in the entry lane
+        let cy = y + HEX_HALF_H;
+        self.draw_condition_hexagon(entry_x, cy, &block.condition);
+        let hex_half_w = self.hex_width(&block.condition) / 2.0;
+        let branch_top = y + HEX_HALF_H * 2.0 + BRANCH_TOP_GAP;
+
+        if !block.then_label.is_empty() {
+            self.draw_side_label(entry_x - hex_half_w, cy, &block.then_label, TextAnchor::End);
+        }
+        if !block.else_label.is_empty() {
+            self.draw_side_label(entry_x + hex_half_w, cy, &block.else_label, TextAnchor::Start);
+        }
+
+        // Then branch (empty branches bypass on a short offset rail). The
+        // then edge leaves the left vertex and runs below the hexagon so it
+        // never shares a horizontal with the else edge (which runs at cy).
+        let (then_end_y, then_end_x) = match first_item_x(&then_items, &txs) {
+            Some(first_x) => {
+                self.draw_then_edge_lanes(entry_x, cy, hex_half_w, first_x, branch_top);
+                self.draw_lane_flow(&then_items, &txs, branch_top)
+            }
+            None => {
+                let bypass_x = entry_x - ew[entry] / 2.0 - BRANCH_GAP / 2.0;
+                self.draw_then_edge_lanes(entry_x, cy, hex_half_w, bypass_x, branch_top);
+                (branch_top, bypass_x)
+            }
+        };
+
+        // Else branch
+        let (else_end_y, else_end_x) = match first_item_x(&else_items, &exs) {
+            Some(first_x) => {
+                self.draw_branch_edge_out(entry_x, cy, hex_half_w, first_x, branch_top);
+                self.draw_lane_flow(&else_items, &exs, branch_top)
+            }
+            None => {
+                let bypass_x = entry_x + tw[entry] / 2.0 + BRANCH_GAP / 2.0;
+                self.draw_branch_edge_out(entry_x, cy, hex_half_w, bypass_x, branch_top);
+                (branch_top, bypass_x)
+            }
+        };
+
+        // Merge diamond back in the entry lane
+        let merge_cy = then_end_y.max(else_end_y) + MERGE_TOP_GAP + MERGE_HALF;
+        self.draw_merge_diamond(entry_x, merge_cy);
+        self.draw_branch_edge_in(then_end_x, then_end_y, entry_x, merge_cy);
+        self.draw_branch_edge_in(else_end_x, else_end_y, entry_x, merge_cy);
+
+        merge_cy + MERGE_HALF
+    }
+
+    /// While loop with lane switches inside: the hexagon and both rails stay
+    /// in the entry lane; body elements sit in their own lanes' columns.
+    fn draw_while_lanes(&mut self, block: &WhileBlock, entry: usize, entry_x: f32, y: f32) -> f32 {
+        let items = lane_items(&block.elements, entry, &self.lane_names);
+        let mut xs = self.lane_centers.clone();
+        xs[entry] = entry_x;
+        let first_x = match first_item_x(&items, &xs) {
+            Some(x) => x,
+            None => return self.draw_while(block, entry_x, y),
+        };
+        let iw = self.items_lane_widths(&items, xs.len());
+
+        // Condition hexagon
+        let cy = y + HEX_HALF_H;
+        self.draw_condition_hexagon(entry_x, cy, &block.condition);
+        let hex_half_w = self.hex_width(&block.condition) / 2.0;
+        let hex_left = entry_x - hex_half_w;
+        let hex_right = entry_x + hex_half_w;
+        let hex_bottom = y + HEX_HALF_H * 2.0;
+
+        // "is" label (loop-continue side, below the hexagon)
+        if !block.is_label.is_empty() {
+            self.primitives.push(Primitive::Text(Text {
+                x: entry_x + 4.0,
+                y: hex_bottom + 10.6,
+                content: block.is_label.clone(),
+                font_size: LABEL_FONT_SIZE,
+                font_family: FONT_FAMILY.into(),
+                fill: self.theme.activity_text_color().into(),
+                anchor: TextAnchor::Start,
+                bold: false,
+                italic: false,
+                underline: false,
+            }));
+        }
+
+        // Body; the entry edge hops lanes below the is-label if needed
+        let body_top = hex_bottom + WHILE_BODY_GAP;
+        if (first_x - entry_x).abs() < 0.5 {
+            self.draw_down_arrow(entry_x, hex_bottom, body_top, None);
+        } else {
+            self.primitives.push(Primitive::Path(Path {
+                d: format!(
+                    "M {},{} L {},{} L {},{} L {},{}",
+                    entry_x,
+                    hex_bottom,
+                    entry_x,
+                    hex_bottom + 16.0,
+                    first_x,
+                    hex_bottom + 16.0,
+                    first_x,
+                    body_top,
+                ),
+                fill: "none".into(),
+                stroke: self.theme.activity_edge_color().into(),
+                stroke_width: 1.0,
+                dashed: false,
+            }));
+            self.primitives.push(Primitive::Polygon(Polygon {
+                points: concave_head(first_x, body_top, 0.0, 1.0),
+                fill: self.theme.activity_edge_color().into(),
+                stroke: "none".into(),
+                stroke_width: 0.0,
+            }));
+        }
+        let (body_end_y, last_x) = self.draw_lane_flow(&items, &xs, body_top);
+
+        let content_half = iw[entry].max(hex_half_w * 2.0) / 2.0;
+        let rail_r = entry_x + content_half + WHILE_RAIL_MARGIN;
+        let rail_l = entry_x - content_half - WHILE_RAIL_MARGIN;
+        let loop_turn_y = body_end_y + WHILE_LOOP_DROP;
+        let junction_y = loop_turn_y + WHILE_EXIT_DROP;
+
+        // Loop-back: down from the last item, right rail up, into the right vertex
+        self.primitives.push(Primitive::Path(Path {
+            d: format!(
+                "M {},{} L {},{} L {},{} L {},{} L {},{}",
+                last_x, body_end_y, last_x, loop_turn_y, rail_r, loop_turn_y, rail_r, cy,
+                hex_right, cy,
+            ),
+            fill: "none".into(),
+            stroke: self.theme.activity_edge_color().into(),
+            stroke_width: 1.0,
+            dashed: false,
+        }));
+        self.primitives.push(Primitive::Polygon(Polygon {
+            points: concave_head(rail_r, (cy + loop_turn_y) / 2.0, 0.0, -1.0),
+            fill: self.theme.activity_edge_color().into(),
+            stroke: "none".into(),
+            stroke_width: 0.0,
+        }));
+        self.primitives.push(Primitive::Polygon(Polygon {
+            points: concave_head(hex_right, cy, -1.0, 0.0),
+            fill: self.theme.activity_edge_color().into(),
+            stroke: "none".into(),
+            stroke_width: 0.0,
+        }));
+
+        // Exit: from the left vertex, left rail down to the junction, back to
+        // the entry lane center (the next connector starts there)
+        self.primitives.push(Primitive::Path(Path {
+            d: format!(
+                "M {},{} L {},{} L {},{} L {},{}",
+                hex_left, cy, rail_l, cy, rail_l, junction_y, entry_x, junction_y,
+            ),
+            fill: "none".into(),
+            stroke: self.theme.activity_edge_color().into(),
+            stroke_width: 1.0,
+            dashed: false,
+        }));
+        self.primitives.push(Primitive::Polygon(Polygon {
+            points: concave_head(rail_l, (cy + junction_y) / 2.0, 0.0, 1.0),
+            fill: self.theme.activity_edge_color().into(),
+            stroke: "none".into(),
+            stroke_width: 0.0,
+        }));
+
+        // "endwhile" label (loop-exit side)
+        if !block.end_label.is_empty() {
+            self.draw_side_label(hex_left, cy, &block.end_label, TextAnchor::End);
+        }
+
+        junction_y
+    }
+
+    /// Repeat loop with lane switches inside: the entry diamond, the bottom
+    /// hexagon and the loop-back rail stay in the entry lane; body elements
+    /// sit in their own lanes' columns.
+    fn draw_repeat_lanes(&mut self, block: &RepeatBlock, entry: usize, entry_x: f32, y: f32) -> f32 {
+        let items = lane_items(&block.elements, entry, &self.lane_names);
+        let mut xs = self.lane_centers.clone();
+        xs[entry] = entry_x;
+        let first_x = match first_item_x(&items, &xs) {
+            Some(x) => x,
+            None => return self.draw_repeat(block, entry_x, y),
+        };
+        let iw = self.items_lane_widths(&items, xs.len());
+
+        // Entry merge diamond
+        let diamond_cy = y + MERGE_HALF;
+        self.draw_merge_diamond(entry_x, diamond_cy);
+
+        // Body
+        let body_top = y + MERGE_HALF * 2.0 + ARROW_SPACING;
+        if (first_x - entry_x).abs() < 0.5 {
+            self.draw_down_arrow(entry_x, y + MERGE_HALF * 2.0, body_top, None);
+        } else {
+            self.draw_cross_elbow(entry_x, first_x, y + MERGE_HALF * 2.0, body_top, None);
+        }
+        let (body_end_y, last_x) = self.draw_lane_flow(&items, &xs, body_top);
+
+        // Condition hexagon back in the entry lane
+        let hex_top = body_end_y + ARROW_SPACING;
+        if (last_x - entry_x).abs() < 0.5 {
+            self.draw_down_arrow(entry_x, body_end_y, hex_top, None);
+        } else {
+            self.draw_cross_elbow(last_x, entry_x, body_end_y, hex_top, None);
+        }
+        let hex_cy = hex_top + HEX_HALF_H;
+        self.draw_condition_hexagon(entry_x, hex_cy, &block.condition);
+        let hex_w = self.hex_width(&block.condition);
+        let hex_right = entry_x + hex_w / 2.0;
+
+        // is-label ("yes") outside the right vertex
+        if !block.is_label.is_empty() {
+            self.draw_side_label(hex_right, hex_cy, &block.is_label, TextAnchor::Start);
+        }
+
+        // Loop-back rail on the right, up into the diamond's right vertex
+        let content_half = iw[entry].max(hex_w) / 2.0;
+        let rail_x = match &block.backward {
+            Some(label) => {
+                let (bw, _) = self.backward_size(label);
+                entry_x + content_half + REPEAT_RAIL_GAP + bw / 2.0
+            }
+            None => entry_x + content_half + WHILE_RAIL_MARGIN,
+        };
+
+        if let Some(label) = &block.backward {
+            let (_, bh) = self.backward_size(label);
+            let backward_top = body_top + (body_end_y - body_top - bh) / 2.0;
+            let backward_bottom = backward_top + bh;
+
+            // Up from the hexagon's right vertex into the backward action
+            self.primitives.push(Primitive::Path(Path {
+                d: format!(
+                    "M {},{} L {},{} L {},{}",
+                    hex_right, hex_cy, rail_x, hex_cy, rail_x, backward_bottom,
+                ),
+                fill: "none".into(),
+                stroke: self.theme.activity_edge_color().into(),
+                stroke_width: 1.0,
+                dashed: false,
+            }));
+            self.primitives.push(Primitive::Polygon(Polygon {
+                points: concave_head(rail_x, backward_bottom, 0.0, -1.0),
+                fill: self.theme.activity_edge_color().into(),
+                stroke: "none".into(),
+                stroke_width: 0.0,
+            }));
+
+            self.draw_action(
+                &Action {
+                    label: label.clone(),
+                    shape: ActionShape::Action,
+                    color: None,
+                },
+                rail_x,
+                backward_top,
+            );
+
+            // From the backward action up into the diamond's right vertex
+            self.primitives.push(Primitive::Path(Path {
+                d: format!(
+                    "M {},{} L {},{} L {},{}",
+                    rail_x,
+                    backward_top,
+                    rail_x,
+                    diamond_cy,
+                    entry_x + MERGE_HALF,
+                    diamond_cy,
+                ),
+                fill: "none".into(),
+                stroke: self.theme.activity_edge_color().into(),
+                stroke_width: 1.0,
+                dashed: false,
+            }));
+        } else {
+            self.primitives.push(Primitive::Path(Path {
+                d: format!(
+                    "M {},{} L {},{} L {},{} L {},{}",
+                    hex_right,
+                    hex_cy,
+                    rail_x,
+                    hex_cy,
+                    rail_x,
+                    diamond_cy,
+                    entry_x + MERGE_HALF,
+                    diamond_cy,
+                ),
+                fill: "none".into(),
+                stroke: self.theme.activity_edge_color().into(),
+                stroke_width: 1.0,
+                dashed: false,
+            }));
+        }
+        self.primitives.push(Primitive::Polygon(Polygon {
+            points: concave_head(entry_x + MERGE_HALF, diamond_cy, -1.0, 0.0),
+            fill: self.theme.activity_edge_color().into(),
+            stroke: "none".into(),
+            stroke_width: 0.0,
+        }));
+
+        hex_cy + HEX_HALF_H
+    }
+
+    /// Then-branch edge in lane mode: leaves the hexagon's left vertex,
+    /// drops below the shape and runs horizontally there — a different
+    /// height from the else edge (which runs at the vertex level, cy), so
+    /// the two routes stay visually separate even when both branches go to
+    /// the same side.
+    fn draw_then_edge_lanes(
+        &mut self,
+        hex_cx: f32,
+        cy: f32,
+        hex_half_w: f32,
+        target_x: f32,
+        target_y: f32,
+    ) {
+        let hex_bottom = cy + HEX_HALF_H;
+        if (target_x - hex_cx).abs() < 0.5 {
+            self.draw_down_arrow(hex_cx, hex_bottom, target_y, None);
+            return;
+        }
+        let rail_y = hex_bottom + 5.0;
+        let vertex_x = hex_cx - hex_half_w;
+        self.primitives.push(Primitive::Path(Path {
+            d: format!(
+                "M {},{} L {},{} L {},{} L {},{}",
+                vertex_x, cy, vertex_x, rail_y, target_x, rail_y, target_x, target_y,
+            ),
+            fill: "none".into(),
+            stroke: self.theme.activity_edge_color().into(),
+            stroke_width: 1.0,
+            dashed: false,
+        }));
+        self.primitives.push(Primitive::Polygon(Polygon {
+            points: concave_head(target_x, target_y, 0.0, 1.0),
+            fill: self.theme.activity_edge_color().into(),
+            stroke: "none".into(),
+            stroke_width: 0.0,
+        }));
+    }
+
+    /// Cross-lane connector: drop 5px from (x1, y1), horizontal over to x2,
+    /// then down into (x2, y2) with an arrowhead; the label sits on the
+    /// horizontal run.
+    fn draw_cross_elbow(&mut self, x1: f32, x2: f32, y1: f32, y2: f32, label: Option<&str>) {
+        self.primitives.push(Primitive::Path(Path {
+            d: format!(
+                "M {},{} L {},{} L {},{} L {},{}",
+                x1,
+                y1,
+                x1,
+                y1 + 5.0,
+                x2,
+                y1 + 5.0,
+                x2,
+                y2,
+            ),
+            fill: "none".into(),
+            stroke: self.theme.activity_edge_color().into(),
+            stroke_width: 1.0,
+            dashed: false,
+        }));
+        self.primitives.push(Primitive::Polygon(Polygon {
+            points: concave_head(x2, y2, 0.0, 1.0),
+            fill: self.theme.activity_edge_color().into(),
+            stroke: "none".into(),
+            stroke_width: 0.0,
+        }));
+        if let Some(label) = label {
+            self.primitives.push(Primitive::Text(Text {
+                x: (x1 + x2) / 2.0,
+                y: y1 + 1.0,
+                content: label.to_string(),
+                font_size: LABEL_FONT_SIZE,
+                font_family: FONT_FAMILY.into(),
+                fill: self.theme.activity_text_color().into(),
+                anchor: TextAnchor::Middle,
+                bold: false,
+                italic: false,
+                underline: false,
+            }));
         }
     }
 
@@ -804,6 +1329,7 @@ impl<'a> ActivityLayoutContext<'a> {
             anchor: TextAnchor::Middle,
             bold: false,
             italic: false,
+            underline: false,
         }));
 
         y + h
@@ -927,6 +1453,7 @@ impl<'a> ActivityLayoutContext<'a> {
                     anchor: TextAnchor::Start,
                     bold: false,
                     italic: false,
+                    underline: false,
                 }));
             }
 
@@ -1139,6 +1666,7 @@ impl<'a> ActivityLayoutContext<'a> {
                 anchor: TextAnchor::Start,
                 bold: false,
                 italic: false,
+                underline: false,
             }));
         }
 
@@ -1306,6 +1834,7 @@ impl<'a> ActivityLayoutContext<'a> {
                     anchor: TextAnchor::Start,
                     bold: false,
                     italic: false,
+                    underline: false,
                 }));
             }
 
@@ -1376,6 +1905,7 @@ impl<'a> ActivityLayoutContext<'a> {
             anchor: TextAnchor::Start,
             bold: false,
             italic: false,
+            underline: false,
         }));
 
         // Entry: the connector from outside stops at the frame; continue it
@@ -1431,6 +1961,7 @@ impl<'a> ActivityLayoutContext<'a> {
             anchor: TextAnchor::Start,
             bold: false,
             italic: false,
+            underline: false,
         }));
     }
 
@@ -1493,6 +2024,7 @@ impl<'a> ActivityLayoutContext<'a> {
                 anchor: TextAnchor::Middle,
                 bold: false,
                 italic: false,
+                underline: false,
             }));
         }
     }
@@ -1524,6 +2056,7 @@ impl<'a> ActivityLayoutContext<'a> {
             anchor,
             bold: false,
             italic: false,
+            underline: false,
         }));
     }
 
@@ -1550,6 +2083,7 @@ impl<'a> ActivityLayoutContext<'a> {
                 anchor: TextAnchor::Start,
                 bold: false,
                 italic: false,
+                underline: false,
             }));
         }
     }
@@ -1681,6 +2215,7 @@ impl<'a> ActivityLayoutContext<'a> {
             anchor: TextAnchor::Middle,
             bold: false,
             italic: false,
+            underline: false,
         }));
     }
 
@@ -1768,6 +2303,127 @@ impl<'a> ActivityLayoutContext<'a> {
             }
         }
     }
+}
+
+/// Whether any element (recursively) is a `|Lane|` switch.
+fn contains_lane_change(elements: &[ActivityElement]) -> bool {
+    elements.iter().any(|e| match e {
+        ActivityElement::LaneChange(_) => true,
+        ActivityElement::If(b) => {
+            contains_lane_change(&b.then_elements)
+                || contains_lane_change(&b.else_elements)
+                || b.elseif_blocks
+                    .iter()
+                    .any(|eb| contains_lane_change(&eb.elements))
+        }
+        ActivityElement::While(b) => contains_lane_change(&b.elements),
+        ActivityElement::Repeat(b) => contains_lane_change(&b.elements),
+        ActivityElement::Fork(b) => b.branches.iter().any(|br| contains_lane_change(br)),
+        ActivityElement::Switch(b) => b.cases.iter().any(|c| contains_lane_change(&c.elements)),
+        ActivityElement::Partition(p) => contains_lane_change(&p.elements),
+        _ => false,
+    })
+}
+
+/// Whether an if block gets the lane-aware layout (elseif chains keep the
+/// regular chain layout and ignore switches inside — a known limitation).
+fn if_has_lane_changes(block: &IfBlock) -> bool {
+    block.elseif_blocks.is_empty()
+        && (contains_lane_change(&block.then_elements) || contains_lane_change(&block.else_elements))
+}
+
+/// Collect lane names in first-appearance document order, recursing into blocks.
+fn collect_lane_names(elements: &[ActivityElement], out: &mut Vec<String>) {
+    for e in elements {
+        match e {
+            ActivityElement::LaneChange(name) => {
+                if !out.iter().any(|n| n == name) {
+                    out.push(name.clone());
+                }
+            }
+            ActivityElement::If(b) => {
+                collect_lane_names(&b.then_elements, out);
+                for eb in &b.elseif_blocks {
+                    collect_lane_names(&eb.elements, out);
+                }
+                collect_lane_names(&b.else_elements, out);
+            }
+            ActivityElement::While(b) => collect_lane_names(&b.elements, out),
+            ActivityElement::Repeat(b) => collect_lane_names(&b.elements, out),
+            ActivityElement::Fork(b) => {
+                for br in &b.branches {
+                    collect_lane_names(br, out);
+                }
+            }
+            ActivityElement::Switch(b) => {
+                for c in &b.cases {
+                    collect_lane_names(&c.elements, out);
+                }
+            }
+            ActivityElement::Partition(p) => collect_lane_names(&p.elements, out),
+            _ => {}
+        }
+    }
+}
+
+/// The last `|Lane|` switch inside an element (document order), if any —
+/// like in PlantUML, a switch keeps applying after the block it is in.
+fn last_lane_change(element: &ActivityElement) -> Option<&str> {
+    fn last_in(elements: &[ActivityElement]) -> Option<&str> {
+        elements.iter().rev().find_map(last_lane_change)
+    }
+    match element {
+        ActivityElement::LaneChange(name) => Some(name),
+        ActivityElement::If(b) => last_in(&b.else_elements)
+            .or_else(|| {
+                b.elseif_blocks
+                    .iter()
+                    .rev()
+                    .find_map(|eb| last_in(&eb.elements))
+            })
+            .or_else(|| last_in(&b.then_elements)),
+        ActivityElement::While(b) => last_in(&b.elements),
+        ActivityElement::Repeat(b) => last_in(&b.elements),
+        ActivityElement::Fork(b) => b.branches.iter().rev().find_map(|br| last_in(br)),
+        ActivityElement::Switch(b) => b.cases.iter().rev().find_map(|c| last_in(&c.elements)),
+        ActivityElement::Partition(p) => last_in(&p.elements),
+        _ => None,
+    }
+}
+
+/// Flatten a block body into (lane, element) items, starting in `entry`;
+/// sibling `|Lane|` switches (and switches inside nested blocks) move the
+/// current lane for the items after them.
+fn lane_items<'e>(
+    elements: &'e [ActivityElement],
+    entry: usize,
+    names: &[String],
+) -> Vec<(usize, &'e ActivityElement)> {
+    let mut cur = entry;
+    let mut items = Vec::new();
+    for e in elements {
+        if let ActivityElement::LaneChange(name) = e {
+            if let Some(i) = names.iter().position(|n| n == name) {
+                cur = i;
+            }
+        } else {
+            items.push((cur, e));
+            if let Some(name) = last_lane_change(e) {
+                if let Some(i) = names.iter().position(|n| n == name) {
+                    cur = i;
+                }
+            }
+        }
+    }
+    items
+}
+
+/// Column x of the first drawable item, if any.
+fn first_item_x(items: &[(usize, &ActivityElement)], xs: &[f32]) -> Option<f32> {
+    items
+        .iter()
+        .find(|(_, e)| !matches!(e, ActivityElement::Arrow(_)))
+        .map(|(l, _)| xs[*l])
 }
 
 /// Circle as an SVG path (two arcs).
@@ -1927,6 +2583,108 @@ stop"#;
         assert!(svg.contains("Initialize"));
         assert!(svg.contains("Process"));
         assert!(svg.contains("Error"));
+    }
+
+    /// Sorted x positions of the swimlane boundary lines (1.5px black).
+    fn lane_boundaries(laid_out: &LaidOutDiagram) -> Vec<f32> {
+        let mut xs: Vec<f32> = laid_out
+            .primitives
+            .iter()
+            .filter_map(|p| match p {
+                Primitive::Line(l) if l.stroke == "#000000" && (l.stroke_width - 1.5).abs() < 0.01 => {
+                    Some(l.x1)
+                }
+                _ => None,
+            })
+            .collect();
+        xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        xs
+    }
+
+    /// Center x of the action rect whose label text matches `label`.
+    fn action_text_x(laid_out: &LaidOutDiagram, label: &str) -> f32 {
+        laid_out
+            .primitives
+            .iter()
+            .find_map(|p| match p {
+                Primitive::Text(t) if t.content == label => Some(t.x),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("text '{}' not found", label))
+    }
+
+    #[test]
+    fn test_if_branch_lane_switch_places_actions_in_target_lane() {
+        let laid_out = layout_from_text(
+            "|A|\nstart\n:One;\nif (ok?) then (yes)\n|B|\n:In B;\n|A|\n:Back;\nelse (no)\n|B|\n:Other B;\nendif\n|A|\nstop",
+        );
+        let b = lane_boundaries(&laid_out);
+        assert_eq!(b.len(), 3, "expected 2 lanes = 3 boundary lines");
+        let in_b = action_text_x(&laid_out, "In B");
+        let other_b = action_text_x(&laid_out, "Other B");
+        let back = action_text_x(&laid_out, "Back");
+        assert!(in_b > b[1] && in_b < b[2], "then action must sit in lane B");
+        assert!(
+            other_b > b[1] && other_b < b[2],
+            "else action must sit in lane B"
+        );
+        assert!(
+            in_b < other_b,
+            "then/else columns sharing a lane must sit side by side"
+        );
+        assert!(back < b[1], "action after switching back must sit in lane A");
+    }
+
+    #[test]
+    fn test_while_body_lane_switch_places_actions_in_target_lane() {
+        let laid_out = layout_from_text(
+            "|A|\nstart\nwhile (more?) is (yes)\n|B|\n:Work;\n|A|\n:Check;\nendwhile (no)\nstop",
+        );
+        let b = lane_boundaries(&laid_out);
+        assert_eq!(b.len(), 3);
+        let work = action_text_x(&laid_out, "Work");
+        let check = action_text_x(&laid_out, "Check");
+        assert!(work > b[1] && work < b[2], "loop body action must sit in lane B");
+        assert!(check < b[1], "action after switching back must sit in lane A");
+    }
+
+    #[test]
+    fn test_repeat_body_lane_switch_places_actions_in_target_lane() {
+        let laid_out = layout_from_text(
+            "|A|\nstart\nrepeat\n|B|\n:Fetch;\n|A|\n:Store;\nrepeat while (more?) is (yes)\nstop",
+        );
+        let b = lane_boundaries(&laid_out);
+        assert_eq!(b.len(), 3);
+        let fetch = action_text_x(&laid_out, "Fetch");
+        let store = action_text_x(&laid_out, "Store");
+        assert!(fetch > b[1] && fetch < b[2], "repeat body action must sit in lane B");
+        assert!(store < b[1], "action after switching back must sit in lane A");
+    }
+
+    #[test]
+    fn test_lane_switch_inside_branch_carries_over_after_block() {
+        // The else branch leaves the lane on B; the action after endif has no
+        // explicit switch and must stay in B (PlantUML semantics).
+        let laid_out = layout_from_text(
+            "|A|\nstart\nif (ok?) then (yes)\n:Stay A;\nelse (no)\n|B|\n:Go B;\nendif\n:After;\nstop",
+        );
+        let b = lane_boundaries(&laid_out);
+        let after = action_text_x(&laid_out, "After");
+        assert!(after > b[1], "element after the block must stay in lane B");
+    }
+
+    #[test]
+    fn test_lane_only_declared_inside_branch_gets_a_column() {
+        let laid_out = layout_from_text(
+            "|A|\nstart\nif (ok?) then (yes)\n|Nested|\n:Deep;\nelse (no)\n:Plain;\nendif\nstop",
+        );
+        let has_nested_title = laid_out
+            .primitives
+            .iter()
+            .any(|p| matches!(p, Primitive::Text(t) if t.content == "Nested"));
+        assert!(has_nested_title, "lane declared only inside a branch must get a header");
+        let b = lane_boundaries(&laid_out);
+        assert_eq!(b.len(), 3, "expected a column for the nested-only lane");
     }
 
     // Regression: nested if branches must not extend past the left edge of the viewBox.

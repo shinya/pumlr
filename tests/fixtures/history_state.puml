@@ -1,0 +1,12 @@
+@startuml
+[*] --> Working
+
+state Working {
+  [*] --> Editing
+  Editing --> Saving : save
+  Saving --> Editing : done
+}
+
+Working --> Suspended : pause
+Suspended --> Working[H] : resume
+@enduml

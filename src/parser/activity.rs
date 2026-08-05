@@ -696,6 +696,39 @@ stop"#;
     }
 
     #[test]
+    fn test_parse_lane_change_inside_if_branch() {
+        let input = "|A|\nif (ok?) then (yes)\n|B|\n:in b;\nelse (no)\n:in a;\nendif";
+        let diagram = parse(input).unwrap();
+        assert!(matches!(&diagram.elements[0], ActivityElement::LaneChange(n) if n == "A"));
+        match &diagram.elements[1] {
+            ActivityElement::If(block) => {
+                assert_eq!(block.then_elements.len(), 2);
+                assert!(
+                    matches!(&block.then_elements[0], ActivityElement::LaneChange(n) if n == "B"),
+                    "lane switch inside the then branch must be kept in the AST"
+                );
+                assert!(matches!(&block.then_elements[1], ActivityElement::Action(_)));
+            }
+            _ => panic!("expected If"),
+        }
+    }
+
+    #[test]
+    fn test_parse_lane_change_inside_while_body() {
+        let input = "|A|\nwhile (more?) is (yes)\n|B|\n:work;\nendwhile (no)";
+        let diagram = parse(input).unwrap();
+        match &diagram.elements[1] {
+            ActivityElement::While(block) => {
+                assert!(
+                    matches!(&block.elements[0], ActivityElement::LaneChange(n) if n == "B"),
+                    "lane switch inside the loop body must be kept in the AST"
+                );
+            }
+            _ => panic!("expected While"),
+        }
+    }
+
+    #[test]
     fn test_parse_arrow_label() {
         let input = ":A;\n-> labeled;\n:B;";
         let diagram = parse(input).unwrap();

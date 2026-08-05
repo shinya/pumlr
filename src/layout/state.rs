@@ -24,6 +24,16 @@ const MARGIN: f32 = 7.0;
 const COMP_PAD_X: f32 = 12.0;
 const COMP_PAD_BOTTOM: f32 = 13.0;
 const COMP_BAND_TO_CHILD: f32 = 11.0;
+// History pseudo-state: circle r=11 with a centered 14px "H" (measured).
+const HIST_R: f32 = 11.0;
+const HIST_BASELINE: f32 = 5.291;
+// Concurrent regions: dashed separator line between stacked regions.
+const REGION_SEP_GAP_ABOVE: f32 = 8.0;
+const REGION_SEP_GAP_BELOW: f32 = 6.0;
+const REGION_SEP_INSET_LEFT: f32 = 5.0;
+const REGION_SEP_INSET_RIGHT: f32 = 7.0;
+const REGION_SEP_WIDTH: f32 = 1.5;
+const REGION_SEP_DASH: &str = "8,10";
 
 /// A positioned node: state box, composite frame, or pseudo circle.
 #[derive(Debug, Clone)]
@@ -43,6 +53,11 @@ enum NodeKind {
     Composite,
     Start,
     End,
+    /// Shallow history pseudo-state (circled H).
+    Hist,
+    /// Dashed separator between concurrent regions (h = 0; x/w are fixed up
+    /// to span the enclosing composite when children are emitted).
+    RegionSep,
 }
 
 pub fn layout_with_theme(diagram: &StateDiagram, theme: &dyn Theme) -> LaidOutDiagram {
@@ -60,45 +75,7 @@ pub fn layout_with_theme(diagram: &StateDiagram, theme: &dyn Theme) -> LaidOutDi
     );
 
     let mut prims: Vec<Primitive> = Vec::new();
-
-    // Edges sharing the same node pair (either direction) are offset sideways
-    // so they don't overlap.
-    let pair_key = |a: &str, b: &str| {
-        if a < b {
-            (a.to_string(), b.to_string())
-        } else {
-            (b.to_string(), a.to_string())
-        }
-    };
-    let offsets: Vec<f32> = diagram
-        .transitions
-        .iter()
-        .enumerate()
-        .map(|(i, tr)| {
-            let key = pair_key(&tr.from, &tr.to);
-            let group: Vec<usize> = diagram
-                .transitions
-                .iter()
-                .enumerate()
-                .filter(|(_, t)| pair_key(&t.from, &t.to) == key)
-                .map(|(j, _)| j)
-                .collect();
-            if group.len() > 1 {
-                let pos = group.iter().position(|&j| j == i).unwrap() as f32;
-                let spread = (pos - (group.len() as f32 - 1.0) / 2.0) * 18.0;
-                // The perpendicular flips with the travel direction, so keep
-                // the spread in a canonical frame or opposite edges land on
-                // the same side.
-                if tr.from > tr.to {
-                    -spread
-                } else {
-                    spread
-                }
-            } else {
-                0.0
-            }
-        })
-        .collect();
+    let offsets = parallel_offsets(diagram);
 
     // Pre-pass: label extents may stick out on the left/right; shift content
     // right if needed and widen the canvas.
@@ -148,6 +125,7 @@ pub fn layout_with_theme(diagram: &StateDiagram, theme: &dyn Theme) -> LaidOutDi
             anchor: TextAnchor::Middle,
             bold: true,
             italic: false,
+            underline: false,
         }));
     }
 
@@ -160,6 +138,80 @@ pub fn layout_with_theme(diagram: &StateDiagram, theme: &dyn Theme) -> LaidOutDi
 
 fn find_node<'a>(placed: &'a [PlacedNode], name: &str) -> Option<&'a PlacedNode> {
     placed.iter().find(|n| n.name == name)
+}
+
+/// Perpendicular offsets so edges sharing the same node pair (either
+/// direction) don't overlap.
+fn parallel_offsets(diagram: &StateDiagram) -> Vec<f32> {
+    let pair_key = |a: &str, b: &str| {
+        if a < b {
+            (a.to_string(), b.to_string())
+        } else {
+            (b.to_string(), a.to_string())
+        }
+    };
+    diagram
+        .transitions
+        .iter()
+        .enumerate()
+        .map(|(i, tr)| {
+            let key = pair_key(&tr.from, &tr.to);
+            let group: Vec<usize> = diagram
+                .transitions
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| pair_key(&t.from, &t.to) == key)
+                .map(|(j, _)| j)
+                .collect();
+            if group.len() > 1 {
+                let pos = group.iter().position(|&j| j == i).unwrap() as f32;
+                let spread = (pos - (group.len() as f32 - 1.0) / 2.0) * 18.0;
+                // The perpendicular flips with the travel direction, so keep
+                // the spread in a canonical frame or opposite edges land on
+                // the same side.
+                if tr.from > tr.to {
+                    -spread
+                } else {
+                    spread
+                }
+            } else {
+                0.0
+            }
+        })
+        .collect()
+}
+
+/// Widen composite inner content so labels of transitions that live entirely
+/// inside it stay within the frame: shifts `inner` right if labels stick out
+/// on the left and returns the new content width.
+fn expand_for_inner_labels(
+    diagram: &StateDiagram,
+    inner: &mut [PlacedNode],
+    iw: f32,
+) -> f32 {
+    let label_measurer = TextMeasurer::new(LABEL_FONT);
+    let offsets = parallel_offsets(diagram);
+    let mut min_x = 0.0f32;
+    let mut max_x = iw;
+    for (i, tr) in diagram.transitions.iter().enumerate() {
+        let Some(label) = &tr.label else { continue };
+        if find_node(inner, &tr.from).is_none() || find_node(inner, &tr.to).is_none() {
+            continue;
+        }
+        let Some(geom) = transition_geometry(diagram, inner, i, tr, offsets[i]) else {
+            continue;
+        };
+        let lw = label_measurer.measure_width(label);
+        if geom.side < 0.0 {
+            min_x = min_x.min(geom.label_pos.0 - 4.0 - lw);
+        } else {
+            max_x = max_x.max(geom.label_pos.0 + 4.0 + lw);
+        }
+    }
+    for node in inner.iter_mut() {
+        node.x -= min_x;
+    }
+    max_x - min_x
 }
 
 /// Lay out the direct contents of `scope` and append placed nodes with
@@ -177,9 +229,10 @@ fn layout_scope(
     let scope_name = scope.unwrap_or("");
     let children = diagram.children_of(scope);
 
-    // Local node list: pseudo start/end + child states.
+    // Local node list: pseudo start/history/end + child states.
     let start_name = format!("{}{}", START_PREFIX, scope_name);
     let end_name = format!("{}{}", END_PREFIX, scope_name);
+    let hist_name = format!("{}{}", HIST_PREFIX, scope_name);
     let uses_start = diagram
         .transitions
         .iter()
@@ -188,16 +241,24 @@ fn layout_scope(
         .transitions
         .iter()
         .any(|t| t.from == end_name || t.to == end_name);
+    let uses_hist = diagram
+        .transitions
+        .iter()
+        .any(|t| t.from == hist_name || t.to == hist_name);
 
     #[derive(Clone)]
     enum Local {
         Start,
+        Hist,
         End,
         State(usize), // index into diagram.states
     }
     let mut locals: Vec<(String, Local)> = Vec::new();
     if uses_start {
         locals.push((start_name.clone(), Local::Start));
+    }
+    if uses_hist {
+        locals.push((hist_name.clone(), Local::Hist));
     }
     for st in &children {
         let idx = diagram
@@ -218,10 +279,66 @@ fn layout_scope(
     for (name, local) in &locals {
         let size = match local {
             Local::Start => (START_R * 2.0, START_R * 2.0),
+            Local::Hist => (HIST_R * 2.0, HIST_R * 2.0),
             Local::End => (END_R * 2.0, END_R * 2.0),
             Local::State(idx) => {
                 let st = &diagram.states[*idx];
-                if st.composite || !diagram.children_of(Some(&st.name)).is_empty() {
+                let st_children = diagram.children_of(Some(&st.name));
+                let regions: Vec<&StateDef> = st_children
+                    .iter()
+                    .filter(|c| c.is_region)
+                    .copied()
+                    .collect();
+                if !regions.is_empty() {
+                    // Concurrent composite: stack each region vertically,
+                    // separated by dashed lines.
+                    let mut region_layouts: Vec<(Vec<PlacedNode>, f32, f32)> = Vec::new();
+                    let mut iw = 0.0f32;
+                    for region in &regions {
+                        let mut nodes: Vec<PlacedNode> = Vec::new();
+                        let (rw, rh) = layout_scope(
+                            diagram,
+                            Some(&region.name),
+                            measurer,
+                            0.0,
+                            0.0,
+                            RANK_GAP_INNER,
+                            &mut nodes,
+                        );
+                        iw = iw.max(rw);
+                        region_layouts.push((nodes, rw, rh));
+                    }
+                    let mut inner: Vec<PlacedNode> = Vec::new();
+                    let mut y = 0.0f32;
+                    for (ri, (nodes, rw, rh)) in region_layouts.into_iter().enumerate() {
+                        if ri > 0 {
+                            y += REGION_SEP_GAP_ABOVE;
+                            inner.push(PlacedNode {
+                                name: format!("sep${}${}", st.name, ri),
+                                x: 0.0,
+                                y,
+                                w: 0.0,
+                                h: 0.0,
+                                kind: NodeKind::RegionSep,
+                            });
+                            y += REGION_SEP_GAP_BELOW;
+                        }
+                        let dx = (iw - rw) / 2.0;
+                        for mut node in nodes {
+                            node.x += dx;
+                            node.y += y;
+                            inner.push(node);
+                        }
+                        y += rh;
+                    }
+                    let ih = y;
+                    let iw = expand_for_inner_labels(diagram, &mut inner, iw);
+                    let name_w = measurer.measure_width(&st.display_name);
+                    let w = (iw + COMP_PAD_X * 2.0).max(name_w + 20.0).max(MIN_SIZE);
+                    let h = TITLE_BAND_H + COMP_BAND_TO_CHILD + ih + COMP_PAD_BOTTOM;
+                    comp_scratch.push((name.clone(), inner, iw, ih));
+                    (w, h)
+                } else if st.composite || !st_children.is_empty() {
                     let mut inner: Vec<PlacedNode> = Vec::new();
                     let (iw, ih) = layout_scope(
                         diagram,
@@ -232,6 +349,7 @@ fn layout_scope(
                         RANK_GAP_INNER,
                         &mut inner,
                     );
+                    let iw = expand_for_inner_labels(diagram, &mut inner, iw);
                     let name_w = measurer.measure_width(&st.display_name);
                     let w = (iw + COMP_PAD_X * 2.0).max(name_w + 20.0).max(MIN_SIZE);
                     let h = TITLE_BAND_H + COMP_BAND_TO_CHILD + ih + COMP_PAD_BOTTOM;
@@ -259,6 +377,10 @@ fn layout_scope(
                 state_name = Some(s.to_string());
             }
         } else if let Some(s) = endpoint.strip_prefix(END_PREFIX) {
+            if !s.is_empty() {
+                state_name = Some(s.to_string());
+            }
+        } else if let Some(s) = endpoint.strip_prefix(HIST_PREFIX) {
             if !s.is_empty() {
                 state_name = Some(s.to_string());
             }
@@ -322,6 +444,7 @@ fn layout_scope(
         let (w, h) = sizes[i];
         let kind = match local {
             Local::Start => NodeKind::Start,
+            Local::Hist => NodeKind::Hist,
             Local::End => NodeKind::End,
             Local::State(idx) => {
                 let st = &diagram.states[*idx];
@@ -345,10 +468,19 @@ fn layout_scope(
             if let Some((_, inner, iw, _)) = comp_scratch.iter().find(|(n, _, _, _)| n == name) {
                 let content_x = x + (w - iw) / 2.0;
                 let content_y = y + TITLE_BAND_H + COMP_BAND_TO_CHILD;
+                // Separators of *this* composite span its frame width;
+                // deeper ones were already sized and only need shifting.
+                let sep_prefix = format!("sep${}$", name);
                 for child in inner {
                     let mut c = child.clone();
-                    c.x += content_x;
-                    c.y += content_y;
+                    if c.kind == NodeKind::RegionSep && c.name.starts_with(&sep_prefix) {
+                        c.x = x + REGION_SEP_INSET_LEFT;
+                        c.w = w - REGION_SEP_INSET_LEFT - REGION_SEP_INSET_RIGHT;
+                        c.y += content_y;
+                    } else {
+                        c.x += content_x;
+                        c.y += content_y;
+                    }
                     placed.push(c);
                 }
             }
@@ -390,6 +522,41 @@ fn draw_node(
                 fill: theme.activity_start_stop_color().to_string(),
                 stroke: theme.activity_start_stop_color().to_string(),
                 stroke_width: 1.0,
+            }));
+        }
+        NodeKind::Hist => {
+            let cx = node.x + HIST_R;
+            let cy = node.y + HIST_R;
+            prims.push(Primitive::Circle(Circle {
+                cx,
+                cy,
+                r: HIST_R,
+                fill: theme.activity_shape_fill().to_string(),
+                stroke: theme.activity_shape_stroke().to_string(),
+                stroke_width: 0.5,
+            }));
+            prims.push(Primitive::Text(Text {
+                x: cx,
+                y: cy + HIST_BASELINE,
+                content: "H".into(),
+                font_size: FONT,
+                font_family: theme.font_family().to_string(),
+                fill: theme.activity_text_color().to_string(),
+                anchor: TextAnchor::Middle,
+                bold: false,
+                italic: false,
+                underline: false,
+            }));
+        }
+        NodeKind::RegionSep => {
+            prims.push(Primitive::DashedLine(DashedLine {
+                x1: node.x,
+                y1: node.y,
+                x2: node.x + node.w,
+                y2: node.y,
+                stroke: theme.activity_shape_stroke().to_string(),
+                stroke_width: REGION_SEP_WIDTH,
+                dash_array: REGION_SEP_DASH.into(),
             }));
         }
         NodeKind::End => {
@@ -448,6 +615,7 @@ fn draw_node(
                 anchor: TextAnchor::Middle,
                 bold: false,
                 italic: false,
+                underline: false,
             }));
             for (i, desc) in st.descriptions.iter().enumerate() {
                 prims.push(Primitive::Text(Text {
@@ -460,6 +628,7 @@ fn draw_node(
                     anchor: TextAnchor::Start,
                     bold: false,
                     italic: false,
+                    underline: false,
                 }));
             }
         }
@@ -528,6 +697,7 @@ fn draw_node(
                 anchor: TextAnchor::Middle,
                 bold: false,
                 italic: false,
+                underline: false,
             }));
         }
     }
@@ -537,7 +707,7 @@ fn draw_node(
 /// (own_center may be perpendicular-shifted for parallel edges).
 fn border_point(node: &PlacedNode, aim: (f32, f32), own_center: (f32, f32)) -> (f32, f32) {
     match node.kind {
-        NodeKind::Start | NodeKind::End => {
+        NodeKind::Start | NodeKind::End | NodeKind::Hist => {
             let r = node.w / 2.0;
             let cx = node.x + r;
             let cy = node.y + r;
@@ -602,7 +772,8 @@ fn transition_geometry(
         p.0 >= n.x && p.0 <= n.x + n.w && p.1 >= n.y && p.1 <= n.y + n.h
     };
     let obstacle = placed.iter().find(|n| {
-        n.name != from.name
+        n.kind != NodeKind::RegionSep
+            && n.name != from.name
             && n.name != to.name
             && !contains(n, (from.x + from.w / 2.0, from.y + from.h / 2.0))
             && !contains(n, (to.x + to.w / 2.0, to.y + to.h / 2.0))
@@ -701,6 +872,7 @@ fn draw_transition(
             anchor,
             bold: false,
             italic: false,
+            underline: false,
         }));
     }
 }
@@ -746,6 +918,74 @@ mod tests {
             .unwrap();
         assert!((rect.width - MIN_SIZE).abs() < 0.01);
         assert!((rect.height - MIN_SIZE).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_concurrent_region_layout() {
+        let d = parse(
+            "state Active {\n  [*] --> A1\n  --\n  [*] --> B1\n}\n[*] --> Active\n",
+        )
+        .unwrap();
+        let laid = layout_with_theme(&d, &DefaultTheme);
+        // One dashed separator between the two regions.
+        let seps: Vec<_> = laid
+            .primitives
+            .iter()
+            .filter_map(|p| match p {
+                Primitive::DashedLine(dl) => Some(dl),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(seps.len(), 1);
+        assert_eq!(seps[0].dash_array, REGION_SEP_DASH);
+        assert_eq!(seps[0].y1, seps[0].y2);
+        // Regions are stacked: A1 fully above the separator, B1 below.
+        let rects: Vec<&Rect> = laid
+            .primitives
+            .iter()
+            .filter_map(|p| match p {
+                Primitive::Rect(r) if r.rx == CORNER_R && r.fill != "none" => Some(r),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(rects.len(), 2);
+        let sep_y = seps[0].y1;
+        assert!(rects.iter().any(|r| r.y + r.height < sep_y));
+        assert!(rects.iter().any(|r| r.y > sep_y));
+    }
+
+    #[test]
+    fn test_history_layout() {
+        let d = parse(
+            "state W {\n  [*] --> E\n}\nW --> S : pause\nS --> W[H] : resume\n[*] --> W\n",
+        )
+        .unwrap();
+        let laid = layout_with_theme(&d, &DefaultTheme);
+        // History circle: r=11 with light fill (unlike the end circle r=11
+        // which has fill "none").
+        let hist = laid
+            .primitives
+            .iter()
+            .find_map(|p| match p {
+                Primitive::Circle(c) if c.r == HIST_R && c.fill != "none" => Some(c),
+                _ => None,
+            })
+            .expect("history circle present");
+        assert!(laid
+            .primitives
+            .iter()
+            .any(|p| matches!(p, Primitive::Text(t) if t.content == "H")));
+        // The circle sits inside the W composite frame.
+        let frame = laid
+            .primitives
+            .iter()
+            .find_map(|p| match p {
+                Primitive::Rect(r) if r.rx == CORNER_R && r.fill == "none" => Some(r),
+                _ => None,
+            })
+            .expect("composite frame");
+        assert!(hist.cx > frame.x && hist.cx < frame.x + frame.width);
+        assert!(hist.cy > frame.y && hist.cy < frame.y + frame.height);
     }
 
     #[test]

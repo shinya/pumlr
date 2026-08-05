@@ -1,0 +1,8 @@
+@startyaml
+name: pumlr
+literal: |
+  first line
+  second line
+  third line
+after: done
+@endyaml

@@ -1,0 +1,8 @@
+@startgantt
+Project starts 2026-08-03
+[Prototype] on {Alice} lasts 7 days
+[Prototype] is colored in Lavender/LightBlue
+[Testing] on {Bob} lasts 5 days
+[Testing] starts at [Prototype]'s end
+[Testing] is colored in Coral
+@endgantt

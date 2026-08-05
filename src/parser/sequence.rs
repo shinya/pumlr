@@ -713,7 +713,11 @@ where
         }
 
         // Multi-line note
-        // TODO: handle multiline notes inside groups
+        if let Some(note) = try_parse_multiline_note(trimmed, lines) {
+            current_elements.push(SequenceElement::Note(note));
+            continue;
+        }
+
         if let Some(element) = parse_line(trimmed, 0)? {
             current_elements.push(element);
         }

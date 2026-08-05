@@ -89,8 +89,13 @@ impl SvgBuilder {
         } else {
             ""
         };
+        let deco = if t.underline {
+            r#" text-decoration="underline""#
+        } else {
+            ""
+        };
         self.content.push_str(&format!(
-            r#"<text x="{}" y="{}" font-size="{}" font-family="{}" fill="{}" text-anchor="{}"{}{}>"#,
+            r#"<text x="{}" y="{}" font-size="{}" font-family="{}" fill="{}" text-anchor="{}"{}{}{}>"#,
             t.x,
             t.y,
             t.font_size,
@@ -99,6 +104,7 @@ impl SvgBuilder {
             anchor,
             weight,
             style,
+            deco,
         ));
         // Handle multi-line text
         let lines: Vec<&str> = t.content.lines().collect();
@@ -283,6 +289,7 @@ mod tests {
             primitives: vec![Primitive::Text(Text {
                 bold: false,
                 italic: false,
+                underline: false,
                 x: 10.0,
                 y: 20.0,
                 content: "A <-> B".into(),

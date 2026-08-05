@@ -181,6 +181,7 @@ pub fn layout_with_theme(diagram: &UseCaseDiagram, theme: &dyn Theme) -> LaidOut
             anchor: TextAnchor::Middle,
             bold: true,
             italic: false,
+            underline: false,
         }));
     }
 
@@ -320,6 +321,7 @@ fn draw_element(
                 anchor: TextAnchor::Middle,
                 bold: false,
                 italic: false,
+                underline: false,
             }));
         }
         ElementKind::UseCase => {
@@ -344,6 +346,7 @@ fn draw_element(
                 anchor: TextAnchor::Middle,
                 bold: false,
                 italic: false,
+                underline: false,
             }));
         }
     }
@@ -379,6 +382,7 @@ fn draw_container(
         anchor: TextAnchor::Middle,
         bold: true,
         italic: false,
+        underline: false,
     }));
 }
 
@@ -487,6 +491,7 @@ fn draw_relation(
             anchor: TextAnchor::Start,
             bold: false,
             italic: false,
+            underline: false,
         }));
     }
 }

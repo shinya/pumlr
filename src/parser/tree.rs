@@ -2,7 +2,11 @@
 ///
 /// Lines are `*`-prefixed with the count giving the depth:
 /// `* root`, `** child`, `*** grandchild`. `*[#color]` sets a node color and
-/// `*_` removes the box. OrgMode `+`/`-` prefixes are accepted as aliases.
+/// `*_` removes the box.
+///
+/// Sides (mind maps): the `left side` / `right side` directives switch the
+/// side of subsequent `*` nodes. OrgMode markers force a side per node:
+/// `+` puts the node on the right, `-` on the left.
 use crate::ast::tree::*;
 use crate::error::PlantUmlError;
 
@@ -14,6 +18,7 @@ pub fn parse(body: &str) -> Result<TreeDiagram, PlantUmlError> {
     // We store the chain of nodes as indices; simplest is to build with a
     // recursive-ownership workaround: keep a Vec<TreeNode> chain and fold.
     let mut chain: Vec<(usize, TreeNode)> = Vec::new();
+    let mut current_side = Side::Right;
 
     fn fold_into(chain: &mut Vec<(usize, TreeNode)>, roots: &mut Vec<TreeNode>, min_level: usize) {
         // Pop nodes deeper or equal to min_level, attaching them to parents.
@@ -40,23 +45,30 @@ pub fn parse(body: &str) -> Result<TreeDiagram, PlantUmlError> {
             diagram.title = Some(rest.trim().to_string());
             continue;
         }
-        if trimmed == "left side" || trimmed == "right side" {
-            // Side switching is not supported yet; nodes stay on one side.
+        if trimmed == "left side" {
+            current_side = Side::Left;
+            continue;
+        }
+        if trimmed == "right side" {
+            current_side = Side::Right;
             continue;
         }
         if trimmed.starts_with("skinparam") || trimmed.starts_with("caption") {
             continue;
         }
 
-        let bullet = trimmed
-            .chars()
-            .take_while(|&c| c == '*' || c == '+' || c == '-')
-            .count();
-        if bullet == 0 {
+        let marker = trimmed.chars().next().unwrap();
+        if marker != '*' && marker != '+' && marker != '-' {
             continue;
         }
+        let bullet = trimmed.chars().take_while(|&c| c == marker).count();
         let mut rest = &trimmed[bullet..];
         let mut node = TreeNode::new(String::new());
+        node.side = match marker {
+            '+' => Side::Right,
+            '-' => Side::Left,
+            _ => current_side,
+        };
         if let Some(r) = rest.strip_prefix('_') {
             node.boxless = true;
             rest = r;
@@ -126,5 +138,39 @@ mod tests {
     #[test]
     fn test_empty_fails() {
         assert!(parse("").is_err());
+    }
+
+    #[test]
+    fn test_side_directives() {
+        let d = parse("* R\n** A\nleft side\n** B\n*** B1\nright side\n** C\n").unwrap();
+        let root = &d.roots[0];
+        assert_eq!(root.children.len(), 3);
+        assert_eq!(root.children[0].side, Side::Right);
+        assert_eq!(root.children[1].side, Side::Left);
+        assert_eq!(root.children[1].children[0].side, Side::Left);
+        assert_eq!(root.children[2].side, Side::Right);
+    }
+
+    #[test]
+    fn test_orgmode_side_markers() {
+        let d = parse("+ R\n++ RightChild\n-- LeftChild\n--- LeftGrand\n").unwrap();
+        let root = &d.roots[0];
+        assert_eq!(root.text, "R");
+        assert_eq!(root.children[0].text, "RightChild");
+        assert_eq!(root.children[0].side, Side::Right);
+        assert_eq!(root.children[1].text, "LeftChild");
+        assert_eq!(root.children[1].side, Side::Left);
+        assert_eq!(root.children[1].children[0].text, "LeftGrand");
+        assert_eq!(root.children[1].children[0].side, Side::Left);
+    }
+
+    #[test]
+    fn test_star_keeps_directive_side_after_orgmode() {
+        // `*` nodes follow the current directive even when mixed with +/-.
+        let d = parse("* R\n-- L\nleft side\n** L2\n++ Rt\n").unwrap();
+        let root = &d.roots[0];
+        assert_eq!(root.children[0].side, Side::Left);
+        assert_eq!(root.children[1].side, Side::Left);
+        assert_eq!(root.children[2].side, Side::Right);
     }
 }

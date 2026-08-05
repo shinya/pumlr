@@ -8,8 +8,23 @@ pub fn parse(body: &str) -> Result<StateDiagram, PlantUmlError> {
         states: Vec::new(),
         transitions: Vec::new(),
     };
-    // Stack of enclosing composite state names.
-    let mut scope: Vec<String> = Vec::new();
+    // Stack of enclosing composite states. `regions > 0` once a `--`
+    // separator was seen; children then belong to `<name>$<regions-1>`.
+    struct ScopeFrame {
+        name: String,
+        regions: usize,
+    }
+    impl ScopeFrame {
+        /// Name that children/pseudo-states of this scope attach to.
+        fn effective(&self) -> String {
+            if self.regions > 0 {
+                format!("{}${}", self.name, self.regions - 1)
+            } else {
+                self.name.clone()
+            }
+        }
+    }
+    let mut scope: Vec<ScopeFrame> = Vec::new();
 
     for line in body.lines() {
         let line = line.trim();
@@ -18,6 +33,40 @@ pub fn parse(body: &str) -> Result<StateDiagram, PlantUmlError> {
         }
         if line == "}" {
             scope.pop();
+            continue;
+        }
+
+        // Concurrent region separator (`--` / `||`) inside a composite body.
+        if !scope.is_empty()
+            && line.len() >= 2
+            && (line.chars().all(|c| c == '-') || line.chars().all(|c| c == '|'))
+        {
+            let frame = scope.last_mut().expect("checked non-empty");
+            if frame.regions == 0 {
+                // Retroactively move everything parsed so far into region 0.
+                let region0 = format!("{}$0", frame.name);
+                for st in diagram.states.iter_mut() {
+                    if st.parent.as_deref() == Some(frame.name.as_str()) {
+                        st.parent = Some(region0.clone());
+                    }
+                }
+                let old_start = format!("{}{}", START_PREFIX, frame.name);
+                let old_end = format!("{}{}", END_PREFIX, frame.name);
+                for tr in diagram.transitions.iter_mut() {
+                    for ep in [&mut tr.from, &mut tr.to] {
+                        if *ep == old_start {
+                            *ep = format!("{}{}", START_PREFIX, region0);
+                        } else if *ep == old_end {
+                            *ep = format!("{}{}", END_PREFIX, region0);
+                        }
+                    }
+                }
+                declare_region(&mut diagram, &region0, &frame.name);
+                frame.regions = 1;
+            }
+            let next = format!("{}${}", frame.name, frame.regions);
+            declare_region(&mut diagram, &next, &frame.name);
+            frame.regions += 1;
             continue;
         }
         if let Some(rest) = line.strip_prefix("title ") {
@@ -46,20 +95,30 @@ pub fn parse(body: &str) -> Result<StateDiagram, PlantUmlError> {
                 .find(|t| t.starts_with('#'))
                 .map(|t| t.to_string());
             let opens_body = rest.trim_end().ends_with('{');
-            declare_state(&mut diagram, &name, &display_name, &scope, color, opens_body);
+            let parent = scope.last().map(|f| f.effective());
+            declare_state(&mut diagram, &name, &display_name, parent, color, opens_body);
             if opens_body {
-                scope.push(name);
+                scope.push(ScopeFrame { name, regions: 0 });
             }
             continue;
         }
 
         // Transition line?
         if let Some((from, to, label, rank_len)) = parse_transition(line) {
-            let from = resolve_endpoint(&from, &scope, true);
-            let to = resolve_endpoint(&to, &scope, false);
+            let eff_scope = scope.last().map(|f| f.effective()).unwrap_or_default();
+            let comp_scope = scope
+                .last()
+                .map(|f| f.name.clone())
+                .unwrap_or_default();
+            let from = resolve_endpoint(&from, &eff_scope, &comp_scope, true);
+            let to = resolve_endpoint(&to, &eff_scope, &comp_scope, false);
             for endpoint in [&from, &to] {
-                if !endpoint.starts_with(START_PREFIX) && !endpoint.starts_with(END_PREFIX) {
-                    declare_state(&mut diagram, endpoint, endpoint, &scope, None, false);
+                if !endpoint.starts_with(START_PREFIX)
+                    && !endpoint.starts_with(END_PREFIX)
+                    && !endpoint.starts_with(HIST_PREFIX)
+                {
+                    let parent = scope.last().map(|f| f.effective());
+                    declare_state(&mut diagram, endpoint, endpoint, parent, None, false);
                 }
             }
             diagram.transitions.push(Transition {
@@ -76,7 +135,8 @@ pub fn parse(body: &str) -> Result<StateDiagram, PlantUmlError> {
             let name = name.trim();
             let desc = desc.trim();
             if !name.is_empty() && !name.contains(' ') && !desc.is_empty() {
-                declare_state(&mut diagram, name, name, &scope, None, false);
+                let parent = scope.last().map(|f| f.effective());
+                declare_state(&mut diagram, name, name, parent, None, false);
                 let state = diagram
                     .states
                     .iter_mut()
@@ -108,7 +168,7 @@ fn declare_state(
     diagram: &mut StateDiagram,
     name: &str,
     display_name: &str,
-    scope: &[String],
+    parent: Option<String>,
     color: Option<String>,
     composite: bool,
 ) {
@@ -123,21 +183,41 @@ fn declare_state(
         name: name.to_string(),
         display_name: display_name.to_string(),
         descriptions: Vec::new(),
-        parent: scope.last().cloned(),
+        parent,
         color,
         composite,
+        is_region: false,
+    });
+}
+
+/// Declare a synthetic concurrent region `<composite>$<index>`.
+fn declare_region(diagram: &mut StateDiagram, name: &str, parent: &str) {
+    diagram.states.push(StateDef {
+        name: name.to_string(),
+        display_name: String::new(),
+        descriptions: Vec::new(),
+        parent: Some(parent.to_string()),
+        color: None,
+        composite: true,
+        is_region: true,
     });
 }
 
 /// `[*]` on the left is the scope's start; on the right the scope's end.
-fn resolve_endpoint(name: &str, scope: &[String], is_from: bool) -> String {
+/// `[H]` is the enclosing composite's shallow history; `X[H]` is state X's.
+/// `eff_scope` is the region-aware scope name, `comp_scope` the composite
+/// itself (history always belongs to the composite, not a region).
+fn resolve_endpoint(name: &str, eff_scope: &str, comp_scope: &str, is_from: bool) -> String {
     if name == "[*]" {
-        let scope_name = scope.last().map(String::as_str).unwrap_or("");
         if is_from {
-            format!("{}{}", START_PREFIX, scope_name)
+            format!("{}{}", START_PREFIX, eff_scope)
         } else {
-            format!("{}{}", END_PREFIX, scope_name)
+            format!("{}{}", END_PREFIX, eff_scope)
         }
+    } else if name == "[H]" {
+        format!("{}{}", HIST_PREFIX, comp_scope)
+    } else if let Some(base) = name.strip_suffix("[H]") {
+        format!("{}{}", HIST_PREFIX, base)
     } else {
         name.to_string()
     }
@@ -217,6 +297,42 @@ mod tests {
         assert_eq!(d.transitions[0].rank_len, 1);
         let d = parse("A --> B\n").unwrap();
         assert_eq!(d.transitions[0].rank_len, 2);
+    }
+
+    #[test]
+    fn test_concurrent_regions() {
+        let d = parse(
+            "state Active {\n  [*] --> A1\n  A1 --> A2\n  --\n  [*] --> B1\n  B1 --> B2\n}\n",
+        )
+        .unwrap();
+        let r0 = d.state("Active$0").unwrap();
+        let r1 = d.state("Active$1").unwrap();
+        assert!(r0.is_region && r1.is_region);
+        assert_eq!(r0.parent.as_deref(), Some("Active"));
+        // Children reparented into their regions.
+        assert_eq!(d.state("A1").unwrap().parent.as_deref(), Some("Active$0"));
+        assert_eq!(d.state("B1").unwrap().parent.as_deref(), Some("Active$1"));
+        // Each region has its own start pseudo-state.
+        assert_eq!(d.transitions[0].from, "start$Active$0");
+        assert_eq!(d.transitions[2].from, "start$Active$1");
+    }
+
+    #[test]
+    fn test_history() {
+        let d = parse(
+            "state W {\n  [*] --> E\n}\nW --> S : pause\nS --> W[H] : resume\n",
+        )
+        .unwrap();
+        assert_eq!(d.transitions[2].to, "hist$W");
+        // `[H]` must not be declared as a regular state.
+        assert!(d.state("hist$W").is_none());
+        assert!(d.state("W[H]").is_none());
+    }
+
+    #[test]
+    fn test_history_in_scope() {
+        let d = parse("state W {\n  X --> [H]\n}\n").unwrap();
+        assert_eq!(d.transitions[0].to, "hist$W");
     }
 
     #[test]

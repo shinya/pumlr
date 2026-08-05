@@ -1,0 +1,12 @@
+@startuml
+Alice -> Bob : request
+alt success
+  Bob --> Alice : ok
+  note right of Bob
+    multi line
+    note in group
+  end note
+else failure
+  Bob --> Alice : ng
+end
+@enduml

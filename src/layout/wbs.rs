@@ -46,6 +46,7 @@ pub fn layout_with_theme(diagram: &TreeDiagram, theme: &dyn Theme) -> LaidOutDia
             anchor: TextAnchor::Middle,
             bold: true,
             italic: false,
+            underline: false,
         }));
     }
 
@@ -226,6 +227,7 @@ fn draw_box(
         anchor: TextAnchor::Start,
         bold: false,
         italic: false,
+        underline: false,
     }));
 }
 

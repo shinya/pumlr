@@ -6,6 +6,46 @@ pub struct GanttDiagram {
     /// Project start date (year, month, day).
     pub start: Date,
     pub tasks: Vec<Task>,
+    /// Closed weekdays (index 0 = Monday ... 6 = Sunday), from
+    /// `saturday are closed` statements.
+    pub closed_weekdays: [bool; 7],
+}
+
+impl GanttDiagram {
+    /// True if the day at `offset` (days from the project start) is closed.
+    /// If every weekday is closed the schedule would never advance, so the
+    /// closure set is ignored in that degenerate case.
+    pub fn is_closed_offset(&self, offset: i64) -> bool {
+        self.closed_weekdays.iter().any(|c| !c)
+            && self.closed_weekdays[self.start.plus_days(offset).weekday() as usize]
+    }
+
+    /// First open (non-closed) day at or after `offset`.
+    pub fn next_open_offset(&self, mut offset: i64) -> i64 {
+        while self.is_closed_offset(offset) {
+            offset += 1;
+        }
+        offset
+    }
+
+    /// Exclusive calendar end offset of a task: `duration` counts working
+    /// days, so closed days inside the span stretch the bar.
+    pub fn task_end_offset(&self, task: &Task) -> i64 {
+        if task.is_milestone {
+            return task.start_offset + 1;
+        }
+        let mut day = task.start_offset;
+        let mut remaining = task.duration.max(1);
+        loop {
+            if !self.is_closed_offset(day) {
+                remaining -= 1;
+                if remaining == 0 {
+                    return day + 1;
+                }
+            }
+            day += 1;
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,10 +104,17 @@ pub struct Task {
     pub name: String,
     /// Day offset from the project start (inclusive).
     pub start_offset: i64,
-    /// Duration in days (>= 1).
+    /// Duration in working days (>= 1).
     pub duration: i64,
     /// Index of the task this one starts after, if declared via
-    /// `starts at [X]'s end`.
+    /// `starts at [X]'s end` / `happens at [X]'s end`.
     pub after: Option<usize>,
+    /// Bar fill color (`is colored in Fill/Border` or inline `#hex`).
     pub color: Option<String>,
+    /// Bar border color (second color of `is colored in Fill/Border`).
+    pub border_color: Option<String>,
+    /// Assigned resource name, from `on {Name}`.
+    pub resource: Option<String>,
+    /// True for `[M] happens at ...` milestones (rendered as a diamond).
+    pub is_milestone: bool,
 }

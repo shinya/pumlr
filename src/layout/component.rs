@@ -163,6 +163,7 @@ pub fn layout_with_theme(diagram: &ComponentDiagram, theme: &dyn Theme) -> LaidO
             anchor: TextAnchor::Middle,
             bold: true,
             italic: false,
+            underline: false,
         }));
     }
 
@@ -245,6 +246,7 @@ fn draw_component(
                 anchor: TextAnchor::Start,
                 bold: false,
                 italic: false,
+                underline: false,
             }));
             // Component icon: body 15x10 at (right-20, top+5), two 4x2 tabs.
             let bx = x + w - 20.0;
@@ -288,6 +290,7 @@ fn draw_component(
                 anchor: TextAnchor::Middle,
                 bold: false,
                 italic: false,
+                underline: false,
             }));
         }
     }
@@ -345,6 +348,7 @@ fn draw_package(
         anchor: TextAnchor::Start,
         bold: true,
         italic: false,
+        underline: false,
     }));
 }
 
@@ -460,6 +464,7 @@ fn draw_relation(
             anchor: TextAnchor::Start,
             bold: false,
             italic: false,
+            underline: false,
         }));
     }
 }

@@ -1,0 +1,14 @@
+@startuml
+package outer {
+  package inner {
+    class Item <<entity>> {
+      +id: long
+    }
+  }
+  class Service <<service>> {
+    +findItem(): Item
+  }
+}
+class Client
+Client --> Item
+@enduml

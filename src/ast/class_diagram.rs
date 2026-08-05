@@ -14,6 +14,9 @@ pub enum ClassKind {
     AbstractClass,
     Interface,
     Enum,
+    /// Lollipop interface (`circle Name` / `() "Name" as N`), drawn as a
+    /// small circle with the name below it.
+    Circle,
 }
 
 #[derive(Debug, Clone)]
@@ -47,10 +50,13 @@ pub enum Visibility {
 }
 
 /// A `package Name { ... }` grouping; contains the names of member classes.
+/// Packages may be nested: `parent` is the index of the enclosing package.
 #[derive(Debug, Clone)]
 pub struct PackageDef {
     pub name: String,
     pub classes: Vec<String>,
+    /// Index (in `ClassDiagram::packages`) of the enclosing package, if any.
+    pub parent: Option<usize>,
 }
 
 /// Marker drawn at one end of a relation line.

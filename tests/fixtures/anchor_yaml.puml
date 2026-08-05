@@ -1,0 +1,6 @@
+@startyaml
+name: &n pumlr
+alias: *n
+version: &v 0.1.0
+same: *v
+@endyaml

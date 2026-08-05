@@ -411,9 +411,12 @@ fn test_render_repeat_fixture() {
 fn test_render_return_fixture() {
     let input = std::fs::read_to_string("tests/fixtures/return_sequence.puml").unwrap();
     let svg = render_svg(&input).unwrap();
-    // return draws numbered replies; hide footbox drops the bottom row
-    assert!(svg.contains("30 ok"));
-    assert!(svg.contains("40 saved"));
+    // return draws numbered replies (number as its own text run);
+    // hide footbox drops the bottom row
+    assert!(svg.contains(">30</text>"));
+    assert!(svg.contains(">ok</text>"));
+    assert!(svg.contains(">40</text>"));
+    assert!(svg.contains(">saved</text>"));
     let client_count = svg.matches(">Client</text>").count();
     assert_eq!(
         client_count, 1,
@@ -506,9 +509,12 @@ fn test_arrow_colors_and_page_decorations() {
 fn test_autonumber_format() {
     let input = std::fs::read_to_string("tests/fixtures/numfmt_sequence.puml").unwrap();
     let svg = render_svg(&input).unwrap();
-    assert!(svg.contains("[010] first"));
-    assert!(svg.contains("[020] second"));
-    assert!(svg.contains("[030] third"));
+    // The autonumber prefix is its own text run (so markup styles can apply
+    // to the number alone), followed by the message label.
+    for (num, label) in [("[010]", "first"), ("[020]", "second"), ("[030]", "third")] {
+        assert!(svg.contains(&format!(">{}</text>", num)), "{num}");
+        assert!(svg.contains(label), "{label}");
+    }
 }
 
 #[test]

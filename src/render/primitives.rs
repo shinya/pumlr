@@ -80,6 +80,7 @@ pub struct Text {
     pub anchor: TextAnchor,
     pub bold: bool,
     pub italic: bool,
+    pub underline: bool,
 }
 
 #[derive(Debug, Clone, Copy)]

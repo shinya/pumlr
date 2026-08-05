@@ -19,13 +19,19 @@ pub struct StateDef {
     pub color: Option<String>,
     /// True when declared with a `{ ... }` body (composite), even if empty.
     pub composite: bool,
+    /// True for a synthetic concurrent region (`--` separator inside a
+    /// composite body). Regions are named `<composite>$<index>` and are never
+    /// drawn themselves; their children are stacked with dashed separators.
+    pub is_region: bool,
 }
 
 /// Pseudo-state endpoint names used in `Transition::from/to`:
 /// `[*]` inside scope `S` becomes `start$S` / `end$S` (top level: `start$` /
 /// `end$`), depending on which side of the arrow it appears.
+/// `[H]` inside scope `S` (or `S[H]` from outside) becomes `hist$S`.
 pub const START_PREFIX: &str = "start$";
 pub const END_PREFIX: &str = "end$";
+pub const HIST_PREFIX: &str = "hist$";
 
 #[derive(Debug, Clone)]
 pub struct Transition {

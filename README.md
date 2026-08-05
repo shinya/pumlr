@@ -29,7 +29,9 @@ use case, component, mind map / WBS, Gantt, and JSON / YAML data diagrams.
 - Notes: `note left of`, `note right of`, `note over A, B` (spanning),
   with colors (`note right of X #Color : text`)
 - `create` participants (appear at their first message), `ref over A, B`
-- `autonumber [start [increment] ["format"]]`, `hide footbox`
+- `autonumber [start [increment] ["format"]]` with `<b>`-style markup in the
+  format (styled numbers), nested activations, multiline notes inside
+  groups, `hide footbox`
 - `header` / `footer` / `caption`
 - Separators (`== label ==`), delays (`...`), spacing (`|||`, `||N||`), title
 
@@ -41,7 +43,7 @@ use case, component, mind map / WBS, Gantt, and JSON / YAML data diagrams.
   hexagon chain), `switch / case / endswitch`
 - `while / endwhile`, `repeat / backward / repeat while`
 - `fork / fork again / end fork`, `partition { ... }`
-- Swimlanes (`|Lane|`, top-level lane switching)
+- Swimlanes (`|Lane|`, including lane switches inside if/while/repeat branches)
 - Edge labels (`-> label;`), notes, title
 
 ### Class diagrams
@@ -52,13 +54,15 @@ use case, component, mind map / WBS, Gantt, and JSON / YAML data diagrams.
 - Relations: extension `<|--`, realization `<|..`, composition `*--`,
   aggregation `o--`, association `-->`, dependency `..>`, with labels and
   cardinalities (`"1" --> "0..*"`), direction hints (`-down->`)
-- `package Name { ... }` folder frames
+- `package Name { ... }` folder frames (nested), `<<stereotype>>` display,
+  `{static}` members (underlined), lollipop interfaces (`circle` / `()`)
 
 ### State diagrams
 
 - `[*]` start / end pseudo states, transitions with labels,
   state descriptions (`State : text`)
-- Composite states (`state X { ... }`, nested), `state "Long" as S`
+- Composite states (`state X { ... }`, nested), concurrent regions (`--`
+  separators), shallow history (`[H]`), `state "Long" as S`
 - Bidirectional transition pairs are drawn as separated parallel edges;
   straight-line routing detours around boxes in the way
 
@@ -80,7 +84,7 @@ use case, component, mind map / WBS, Gantt, and JSON / YAML data diagrams.
 ### Mind maps & WBS
 
 - `@startmindmap` / `@startwbs` with `*` depth markers, `*[#color]` node
-  colors, `*_` boxless nodes
+  colors, `*_` boxless nodes, `left side` / OrgMode `+`/`-` side control
 - Mind map: root at the left, bezier connectors, subtree centering
 - WBS: root on top, level-1 row, deeper levels as indented vertical lists
 
@@ -88,13 +92,17 @@ use case, component, mind map / WBS, Gantt, and JSON / YAML data diagrams.
 
 - `Project starts <date>`, `[Task] starts <date> and lasts N days`,
   `[Task] starts at [Other]'s end` dependency chains with elbow arrows
+- Closed weekdays (`saturday are closed`: shading + working-day durations
+  with split bars), milestones (`happens at`), task colors (`is colored
+  in`), resources (`on {Alice}`)
 - Day-grid timeline with weekday / day headers (mirrored footer), month
   spans, task bars with inline labels
 
 ### JSON / YAML data diagrams
 
 - `@startjson` (full JSON) and `@startyaml` (a practical YAML subset:
-  nested maps, scalar lists, scalars)
+  nested maps, lists incl. maps-in-lists, block scalars `|`/`>`, anchors
+  kept literal like PlantUML)
 - Two-column tables with bold keys, single-column array boxes, dashed
   bullet links to nested boxes, `☑ true` checkboxes for JSON booleans
 

@@ -1,0 +1,9 @@
+@startuml
+class Counter {
+  {static} count: int
+  +value: int
+  {static} +instance(): Counter
+}
+() "Runnable" as R
+R - Counter
+@enduml

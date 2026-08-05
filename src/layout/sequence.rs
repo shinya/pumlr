@@ -96,10 +96,11 @@ struct LayoutContext<'a> {
     /// Rightmost extent of content that sticks out past the participants
     /// (self-message loops, notes), used to widen the diagram.
     max_right: f32,
-    /// Currently open activations: (participant name, start y, activator).
-    active_participants: Vec<(String, f32, Option<String>)>,
-    /// Finished activations: (participant name, start y, end y).
-    finished_activations: Vec<(String, f32, f32)>,
+    /// Currently open activations:
+    /// (participant name, start y, activator, nesting depth).
+    active_participants: Vec<(String, f32, Option<String>, usize)>,
+    /// Finished activations: (participant name, start y, end y, depth).
+    finished_activations: Vec<(String, f32, f32, usize)>,
 }
 
 impl<'a> LayoutContext<'a> {
@@ -155,6 +156,7 @@ impl<'a> LayoutContext<'a> {
             self.fg_primitives.push(Primitive::Text(Text {
                 bold: false,
                 italic: false,
+                underline: false,
                 x: self.calculate_total_width() - 4.0,
                 y: self.y_cursor + 5.0,
                 content: header.clone(),
@@ -202,20 +204,21 @@ impl<'a> LayoutContext<'a> {
 
         // Close any activations left open, then draw all activation bars
         // (above the lifelines, below messages).
-        let open: Vec<(String, f32, Option<String>)> =
+        let open: Vec<(String, f32, Option<String>, usize)> =
             std::mem::take(&mut self.active_participants);
-        for (name, start_y, _) in open {
+        for (name, start_y, _, depth) in open {
             self.finished_activations
-                .push((name, start_y, bottom_box_y));
+                .push((name, start_y, bottom_box_y, depth));
         }
-        let bars: Vec<(f32, f32, f32)> = self
+        let bars: Vec<(f32, f32, f32, usize)> = self
             .finished_activations
             .iter()
-            .map(|(name, start, end)| (self.participant_x(name), *start, *end))
+            .map(|(name, start, end, depth)| (self.participant_x(name), *start, *end, *depth))
             .collect();
-        for (x, start, end) in bars {
+        for (x, start, end, depth) in bars {
+            // Nested bars are shifted right by half a bar per level.
             self.group_primitives.push(Primitive::Rect(Rect {
-                x: x - ACTIVATION_HALF_W,
+                x: x - ACTIVATION_HALF_W + depth as f32 * ACTIVATION_HALF_W,
                 y: start,
                 width: ACTIVATION_HALF_W * 2.0,
                 height: end - start,
@@ -232,6 +235,7 @@ impl<'a> LayoutContext<'a> {
             self.fg_primitives.push(Primitive::Text(Text {
                 bold: false,
                 italic: false,
+                underline: false,
                 x: self.calculate_total_width() / 2.0,
                 y: self.y_cursor + 6.0,
                 content: caption.clone(),
@@ -246,6 +250,7 @@ impl<'a> LayoutContext<'a> {
             self.fg_primitives.push(Primitive::Text(Text {
                 bold: false,
                 italic: false,
+                underline: false,
                 x: self.calculate_total_width() / 2.0,
                 y: self.y_cursor + 4.0,
                 content: footer.clone(),
@@ -303,6 +308,7 @@ impl<'a> LayoutContext<'a> {
                 self.box_primitives.push(Primitive::Text(Text {
                     bold: true,
                     italic: false,
+                    underline: false,
                     x: (left + right) / 2.0,
                     y: top + 13.0,
                     content: pbox.title.clone(),
@@ -520,6 +526,7 @@ impl<'a> LayoutContext<'a> {
         self.fg_primitives.push(Primitive::Text(Text {
             bold: true,
             italic: false,
+            underline: false,
             x: center_x,
             y: self.y_cursor + self.title_measurer.line_height(),
             content: title.to_string(),
@@ -570,6 +577,7 @@ impl<'a> LayoutContext<'a> {
                 prims.push(Primitive::Text(Text {
                     bold: false,
                     italic: false,
+                    underline: false,
                     x: p.x_center,
                     y: label_baseline,
                     content: p.label.clone(),
@@ -656,6 +664,7 @@ impl<'a> LayoutContext<'a> {
                 prims.push(Primitive::Text(Text {
                     bold: false,
                     italic: false,
+                    underline: false,
                     x: cx,
                     y: label_baseline,
                     content: p.label.clone(),
@@ -709,6 +718,7 @@ impl<'a> LayoutContext<'a> {
                 prims.push(Primitive::Text(Text {
                     bold: false,
                     italic: false,
+                    underline: false,
                     x: p.x_center - QUEUE_CAP,
                     y: cy + 5.0,
                     content: p.label.clone(),
@@ -742,6 +752,7 @@ impl<'a> LayoutContext<'a> {
                 prims.push(Primitive::Text(Text {
                     bold: false,
                     italic: false,
+                    underline: false,
                     x: front_x + front_w / 2.0,
                     y: front_y + box_h / 2.0 + self.title_measurer.line_height() * 0.32,
                     content: p.label.clone(),
@@ -797,6 +808,7 @@ impl<'a> LayoutContext<'a> {
                 prims.push(Primitive::Text(Text {
                     bold: false,
                     italic: false,
+                    underline: false,
                     x: cx,
                     y: label_baseline,
                     content: p.label.clone(),
@@ -821,6 +833,7 @@ impl<'a> LayoutContext<'a> {
                 prims.push(Primitive::Text(Text {
                     bold: false,
                     italic: false,
+                    underline: false,
                     x: p.x_center,
                     y: box_y + box_h / 2.0 + self.title_measurer.line_height() * 0.32,
                     content: p.label.clone(),
@@ -880,17 +893,19 @@ impl<'a> LayoutContext<'a> {
                         .as_ref()
                         .filter(|(_, to)| to == name)
                         .map(|(from, _)| from.clone());
+                    let depth = self.active_depth(name).map_or(0, |d| d + 1);
                     self.active_participants
-                        .push((name.clone(), self.y_cursor, activator));
+                        .push((name.clone(), self.y_cursor, activator, depth));
                 }
                 SequenceElement::Deactivate(name) => {
                     if let Some(pos) = self
                         .active_participants
                         .iter()
-                        .rposition(|(n, _, _)| n == name)
+                        .rposition(|(n, _, _, _)| n == name)
                     {
-                        let (n, start_y, _) = self.active_participants.remove(pos);
-                        self.finished_activations.push((n, start_y, self.y_cursor));
+                        let (n, start_y, _, depth) = self.active_participants.remove(pos);
+                        self.finished_activations
+                            .push((n, start_y, self.y_cursor, depth));
                     }
                 }
                 SequenceElement::AutoNumber(config) => {
@@ -935,9 +950,45 @@ impl<'a> LayoutContext<'a> {
         out
     }
 
+    /// Consume the next autonumber value, splitting `<b>`/`<i>`/`<u>` markup
+    /// tags in the format string into style flags.
+    /// Returns (text, bold, italic, underline).
+    fn take_auto_number(&mut self) -> Option<(String, bool, bool, bool)> {
+        let num = self.auto_number?;
+        self.auto_number = Some(num + self.auto_number_step);
+        let mut text = self.format_auto_number(num);
+        let mut bold = false;
+        let mut italic = false;
+        let mut underline = false;
+        for (open, close, flag) in [
+            ("<b>", "</b>", 0),
+            ("<i>", "</i>", 1),
+            ("<u>", "</u>", 2),
+        ] {
+            if text.contains(open) || text.contains(close) {
+                match flag {
+                    0 => bold = true,
+                    1 => italic = true,
+                    _ => underline = true,
+                }
+                text = text.replace(open, "").replace(close, "");
+            }
+        }
+        Some((text, bold, italic, underline))
+    }
+
     /// Whether `name` currently has an open activation bar.
     fn is_active(&self, name: &str) -> bool {
-        self.active_participants.iter().any(|(n, _, _)| n == name)
+        self.active_depth(name).is_some()
+    }
+
+    /// Deepest open activation level for `name` (0 = outermost).
+    fn active_depth(&self, name: &str) -> Option<usize> {
+        self.active_participants
+            .iter()
+            .filter(|(n, _, _, _)| n == name)
+            .map(|(_, _, _, d)| *d)
+            .max()
     }
 
     fn layout_message(&mut self, msg: &Message, pending_activations: &[String]) {
@@ -948,22 +999,20 @@ impl<'a> LayoutContext<'a> {
         // Bars activated by this message start at its line, and the arrow
         // already stops at the new bar's edge.
         for name in pending_activations {
+            let depth = self.active_depth(name).map_or(0, |d| d + 1);
             self.active_participants
-                .push((name.clone(), y, Some(msg.from.clone())));
+                .push((name.clone(), y, Some(msg.from.clone()), depth));
         }
 
-        let mut label = msg.label.clone();
-        if let Some(num) = self.auto_number {
-            label = format!("{} {}", self.format_auto_number(num), label);
-            self.auto_number = Some(num + self.auto_number_step);
-        }
+        let label = msg.label.clone();
+        let num_prefix = self.take_auto_number();
 
         self.last_message = Some((msg.from.clone(), msg.to.clone()));
         if msg.is_self_referencing {
-            self.layout_self_message(msg, &label, y);
+            self.layout_self_message(msg, &label, num_prefix.as_ref(), y);
             self.y_cursor = y + SELF_MSG_HEIGHT;
         } else {
-            self.layout_normal_message(msg, &label, y);
+            self.layout_normal_message(msg, &label, num_prefix.as_ref(), y);
             self.y_cursor = y;
         }
 
@@ -972,10 +1021,10 @@ impl<'a> LayoutContext<'a> {
             if let Some(pos) = self
                 .active_participants
                 .iter()
-                .rposition(|(n, _, _)| *n == msg.from)
+                .rposition(|(n, _, _, _)| *n == msg.from)
             {
-                let (n, start_y, _) = self.active_participants.remove(pos);
-                self.finished_activations.push((n, start_y, y));
+                let (n, start_y, _, depth) = self.active_participants.remove(pos);
+                self.finished_activations.push((n, start_y, y, depth));
             }
         }
     }
@@ -983,16 +1032,13 @@ impl<'a> LayoutContext<'a> {
     /// `return <label>`: reply from the most recently activated participant to
     /// its activator, closing that activation at this line.
     fn layout_return(&mut self, label: &str) {
-        let Some((callee, start_y, activator)) = self.active_participants.pop() else {
+        let Some((callee, start_y, activator, depth)) = self.active_participants.pop() else {
             return;
         };
         let y = self.y_cursor + MESSAGE_SPACING;
 
-        let mut label = label.to_string();
-        if let Some(num) = self.auto_number {
-            label = format!("{} {}", self.format_auto_number(num), label);
-            self.auto_number = Some(num + self.auto_number_step);
-        }
+        let label = label.to_string();
+        let num_prefix = self.take_auto_number();
 
         if let Some(activator) = activator {
             let msg = Message {
@@ -1011,16 +1057,22 @@ impl<'a> LayoutContext<'a> {
             // The callee is still active while drawing, so the line leaves
             // from its bar edge.
             self.active_participants
-                .push((callee.clone(), start_y, None));
-            self.layout_normal_message(&msg, &label, y);
+                .push((callee.clone(), start_y, None, depth));
+            self.layout_normal_message(&msg, &label, num_prefix.as_ref(), y);
             self.active_participants.pop();
         }
 
-        self.finished_activations.push((callee, start_y, y));
+        self.finished_activations.push((callee, start_y, y, depth));
         self.y_cursor = y;
     }
 
-    fn layout_normal_message(&mut self, msg: &Message, label: &str, y: f32) {
+    fn layout_normal_message(
+        &mut self,
+        msg: &Message,
+        label: &str,
+        num_prefix: Option<&(String, bool, bool, bool)>,
+        y: f32,
+    ) {
         let from_x = self.participant_x(&msg.from);
         let to_x = self.participant_x(&msg.to);
 
@@ -1061,6 +1113,7 @@ impl<'a> LayoutContext<'a> {
             self.fg_primitives.push(Primitive::Text(Text {
                 bold: false,
                 italic: false,
+                underline: false,
                 x: cx,
                 y: box_top + h / 2.0 + self.title_measurer.line_height() * 0.32,
                 content: label_text,
@@ -1075,7 +1128,14 @@ impl<'a> LayoutContext<'a> {
         // Endpoints stop at activation bar edges: the source line starts at
         // the bar's side, the arrow tip stops 2px short of the target bar
         // (1px short of the bare lifeline).
-        let from_edge = if self.is_active(&msg.from) {
+        // Nested bars shift right, so only the right side of a bar stack
+        // moves outward with depth; the left side stays put.
+        let right_edge = |depth: Option<usize>| {
+            depth.map_or(0.0, |d| ACTIVATION_HALF_W * (1.0 + d as f32))
+        };
+        let from_edge = if from_x <= to_x {
+            right_edge(self.active_depth(&msg.from))
+        } else if self.is_active(&msg.from) {
             ACTIVATION_HALF_W
         } else {
             0.0
@@ -1088,7 +1148,11 @@ impl<'a> LayoutContext<'a> {
                 .map(|p| p.box_width / 2.0 + 2.0)
                 .unwrap_or(1.0)
         } else if self.is_active(&msg.to) {
-            ACTIVATION_HALF_W + 2.0
+            if from_x <= to_x {
+                ACTIVATION_HALF_W + 2.0
+            } else {
+                right_edge(self.active_depth(&msg.to)) + 2.0
+            }
         } else {
             1.0
         };
@@ -1123,34 +1187,60 @@ impl<'a> LayoutContext<'a> {
 
         // Label above the arrow, anchored near the arrow's left end
         // (PlantUML: 7px right of the source going right, 16px right of the
-        // arrowhead going left).
-        if !label.is_empty() {
-            let label_x = if from_x <= to_x { x1 + 7.0 } else { x2 + 16.0 };
-            self.fg_primitives.push(Primitive::Text(Text {
-                bold: false,
-                italic: false,
-                x: label_x,
-                y: y - 5.0,
-                content: label.to_string(),
-                font_size: self.theme.font_size(),
-                font_family: self.theme.font_family().to_string(),
-                fill: "black".into(),
-                anchor: TextAnchor::Start,
-            }));
+        // arrowhead going left). An autonumber prefix keeps its own markup
+        // styles (e.g. bold), so it is drawn as a separate text run.
+        if !label.is_empty() || num_prefix.is_some() {
+            let mut label_x = if from_x <= to_x { x1 + 7.0 } else { x2 + 16.0 };
+            if let Some((num_text, bold, italic, underline)) = num_prefix {
+                self.fg_primitives.push(Primitive::Text(Text {
+                    bold: *bold,
+                    italic: *italic,
+                    underline: *underline,
+                    x: label_x,
+                    y: y - 5.0,
+                    content: num_text.clone(),
+                    font_size: self.theme.font_size(),
+                    font_family: self.theme.font_family().to_string(),
+                    fill: "black".into(),
+                    anchor: TextAnchor::Start,
+                }));
+                label_x += self.measurer.measure_width(num_text)
+                    + self.measurer.measure_width(" ");
+            }
+            if !label.is_empty() {
+                self.fg_primitives.push(Primitive::Text(Text {
+                    bold: false,
+                    italic: false,
+                    underline: false,
+                    x: label_x,
+                    y: y - 5.0,
+                    content: label.to_string(),
+                    font_size: self.theme.font_size(),
+                    font_family: self.theme.font_family().to_string(),
+                    fill: "black".into(),
+                    anchor: TextAnchor::Start,
+                }));
+            }
         }
     }
 
-    fn layout_self_message(&mut self, msg: &Message, label: &str, y: f32) {
+    fn layout_self_message(
+        &mut self,
+        msg: &Message,
+        label: &str,
+        num_prefix: Option<&(String, bool, bool, bool)>,
+        y: f32,
+    ) {
         let x = self.participant_x(&msg.from);
         let dashed = msg.arrow.line == LineStyle::Dashed;
 
         // PlantUML shape: out to the right from the bar/lifeline edge,
-        // a short drop, and back with a left-pointing arrowhead.
-        let edge = if self.is_active(&msg.from) {
-            ACTIVATION_HALF_W
-        } else {
-            0.0
-        };
+        // a short drop, and back with a left-pointing arrowhead. Self
+        // messages leave from the right side, which shifts out with
+        // nested-activation depth.
+        let edge = self
+            .active_depth(&msg.from)
+            .map_or(0.0, |d| ACTIVATION_HALF_W * (1.0 + d as f32));
         let x0 = x + edge;
         let x_right = x0 + SELF_MSG_WIDTH;
         let y_bottom = y + SELF_MSG_HEIGHT;
@@ -1186,22 +1276,42 @@ impl<'a> LayoutContext<'a> {
             stroke_width: 0.0,
         }));
 
-        // Label above the top line
-        if !label.is_empty() {
-            self.fg_primitives.push(Primitive::Text(Text {
-                bold: false,
-                italic: false,
-                x: x0 + 7.0,
-                y: y - 5.0,
-                content: label.to_string(),
-                font_size: self.theme.font_size(),
-                font_family: self.theme.font_family().to_string(),
-                fill: "black".into(),
-                anchor: TextAnchor::Start,
-            }));
+        // Label above the top line (autonumber prefix as its own styled run).
+        if !label.is_empty() || num_prefix.is_some() {
+            let mut label_x = x0 + 7.0;
+            if let Some((num_text, bold, italic, underline)) = num_prefix {
+                self.fg_primitives.push(Primitive::Text(Text {
+                    bold: *bold,
+                    italic: *italic,
+                    underline: *underline,
+                    x: label_x,
+                    y: y - 5.0,
+                    content: num_text.clone(),
+                    font_size: self.theme.font_size(),
+                    font_family: self.theme.font_family().to_string(),
+                    fill: "black".into(),
+                    anchor: TextAnchor::Start,
+                }));
+                label_x += self.measurer.measure_width(num_text)
+                    + self.measurer.measure_width(" ");
+            }
+            if !label.is_empty() {
+                self.fg_primitives.push(Primitive::Text(Text {
+                    bold: false,
+                    italic: false,
+                    underline: false,
+                    x: label_x,
+                    y: y - 5.0,
+                    content: label.to_string(),
+                    font_size: self.theme.font_size(),
+                    font_family: self.theme.font_family().to_string(),
+                    fill: "black".into(),
+                    anchor: TextAnchor::Start,
+                }));
+            }
             self.max_right = self
                 .max_right
-                .max(x0 + 7.0 + self.measurer.measure_width(label));
+                .max(label_x + self.measurer.measure_width(label));
         }
         self.max_right = self.max_right.max(x_right);
     }
@@ -1260,6 +1370,7 @@ impl<'a> LayoutContext<'a> {
         self.fg_primitives.push(Primitive::Text(Text {
             bold: true,
             italic: false,
+            underline: false,
             x: left + 13.0,
             y: top + 13.5,
             content: "ref".into(),
@@ -1273,6 +1384,7 @@ impl<'a> LayoutContext<'a> {
             self.fg_primitives.push(Primitive::Text(Text {
                 bold: false,
                 italic: false,
+                underline: false,
                 x: (left + right) / 2.0,
                 y: top + tab_h + 13.0 + i as f32 * 14.0,
                 content: line.to_string(),
@@ -1391,6 +1503,7 @@ impl<'a> LayoutContext<'a> {
         self.fg_primitives.push(Primitive::Text(Text {
             bold: false,
             italic: false,
+            underline: false,
             x: x + NOTE_PADDING + 1.0,
             y: y + NOTE_PADDING + self.measurer.line_height() * 0.8,
             content: note.text.clone(),
@@ -1411,6 +1524,10 @@ impl<'a> LayoutContext<'a> {
         // The header tab overlaps the first message row's whitespace,
         // so only a small padding is added here.
         self.y_cursor += GROUP_PADDING;
+
+        // Everything drawn from here until the frame closes belongs to the
+        // group; boxes (notes) among it widen the frame.
+        let prim_start = self.fg_primitives.len();
 
         // Layout main elements
         self.layout_elements(&group.elements);
@@ -1437,7 +1554,7 @@ impl<'a> LayoutContext<'a> {
             .iter()
             .filter(|p| involved.contains(&p.name))
             .collect();
-        let (min_x, max_x) = if span.is_empty() {
+        let (mut min_x, mut max_x) = if span.is_empty() {
             (
                 DIAGRAM_MARGIN,
                 self.calculate_total_width() - DIAGRAM_MARGIN,
@@ -1454,6 +1571,28 @@ impl<'a> LayoutContext<'a> {
                     + 10.0,
             )
         };
+        // Notes drawn inside the group (rects / note-outline paths among its
+        // primitives) must stay within the frame.
+        for prim in &self.fg_primitives[prim_start..] {
+            match prim {
+                Primitive::Rect(r) => {
+                    min_x = min_x.min(r.x - 10.0);
+                    max_x = max_x.max(r.x + r.width + 10.0);
+                }
+                Primitive::Path(p) => {
+                    // Note outlines use simple "M x,y L x,y ..." paths.
+                    for tok in p.d.split_whitespace() {
+                        if let Some((xs, _)) = tok.split_once(',') {
+                            if let Ok(px) = xs.parse::<f32>() {
+                                min_x = min_x.min(px - 10.0);
+                                max_x = max_x.max(px + 10.0);
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
 
         self.max_right = self.max_right.max(max_x + 2.0);
 
@@ -1491,6 +1630,7 @@ impl<'a> LayoutContext<'a> {
         self.group_primitives.push(Primitive::Text(Text {
             bold: true,
             italic: false,
+            underline: false,
             x: min_x + 15.0,
             y: group_start_y + 13.5,
             content: kind.to_string(),
@@ -1505,6 +1645,7 @@ impl<'a> LayoutContext<'a> {
             self.group_primitives.push(Primitive::Text(Text {
                 bold: true,
                 italic: false,
+                underline: false,
                 x: min_x + tab_width + 15.0,
                 y: group_start_y + 12.6,
                 content: format!("[{}]", group.label),
@@ -1542,6 +1683,7 @@ impl<'a> LayoutContext<'a> {
             self.group_primitives.push(Primitive::Text(Text {
                 bold: true,
                 italic: false,
+                underline: false,
                 x: min_x + 5.0,
                 y: divider_y + 10.6,
                 content: else_label,
@@ -1591,6 +1733,7 @@ impl<'a> LayoutContext<'a> {
         self.fg_primitives.push(Primitive::Text(Text {
             bold: true,
             italic: false,
+            underline: false,
             x: center_x,
             y: y + 4.5,
             content: sep.label.clone(),
@@ -1611,6 +1754,7 @@ impl<'a> LayoutContext<'a> {
             self.fg_primitives.push(Primitive::Text(Text {
                 bold: false,
                 italic: false,
+                underline: false,
                 x: total_width / 2.0,
                 y: self.y_cursor + self.measurer.line_height() * 0.7,
                 content: text.clone(),

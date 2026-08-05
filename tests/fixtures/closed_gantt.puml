@@ -1,0 +1,9 @@
+@startgantt
+Project starts 2026-08-03
+saturday are closed
+sunday are closed
+[Design] starts 2026-08-03 and lasts 5 days
+[Build] starts at [Design]'s end and lasts 10 days
+[Kickoff] happens at 2026-08-10
+[Release] happens at [Build]'s end
+@endgantt

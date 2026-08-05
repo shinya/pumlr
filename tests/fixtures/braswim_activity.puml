@@ -1,0 +1,23 @@
+@startuml
+|Customer|
+start
+:Browse Items;
+if (In stock?) then (yes)
+  |Shop|
+  :Prepare Item;
+  |Customer|
+  :Pay;
+else (no)
+  |Shop|
+  :Notify Unavailable;
+endif
+|Customer|
+:Leave Review;
+while (More items?) is (yes)
+  |Shop|
+  :Restock;
+  |Customer|
+  :Check Item;
+endwhile (no)
+stop
+@enduml
